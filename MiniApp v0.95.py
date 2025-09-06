@@ -35,7 +35,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread, QSettings, QPropertyAnimation,
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # 界面组件仍在QtWebEngineWidgets
 from PyQt6.QtWebEngineCore import (QWebEnginePage,
                                    QWebEngineCookieStore,
-                                   QWebEngineProfile)  # 核心功能迁移到QtWebEngineCore
+                                   QWebEngineProfile,
+                                   QWebEngineSettings)  # 核心功能迁移到QtWebEngineCore
 print('已导入: QtCore组件和WebEngine相关组件')
 # 设置中文字体支持
 font = QFont()
@@ -861,7 +862,8 @@ class NewsWindow(QWidget) :
             loading_item = QListWidgetItem("数据加载中，请稍候...")
             loading_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.news_list.addItem(loading_item)
-            response = requests.get(url , headers = headers , timeout = 10)
+            # 禁用SSL证书验证以解决证书错误问题
+            response = requests.get(url , headers = headers , timeout = 10, verify=False)
             response.encoding = 'utf-8'
             soup = BeautifulSoup(response.text , 'lxml')
             news_items = soup.find_all('div' , class_ = 'content_1YWBm')
@@ -1444,14 +1446,16 @@ class ResourceDownloadThread(QThread) :
                 counter += 1
             # 获取文件大小
             try :
-                head_response = self.session.head(self.url , allow_redirects = True , timeout = 10)
+                # 添加verify=False参数来绕过SSL证书验证
+                head_response = self.session.head(self.url , allow_redirects = True , timeout = 10, verify=False)
                 total_size = int(head_response.headers.get('content-length' , 0))
             except :
                 total_size = 0
             self.message_received.emit(f"开始下载: {self.file_name}")
             self.message_received.emit(f"保存路径: {file_path}")
             # 开始下载
-            response = self.session.get(self.url , stream = True , allow_redirects = True , timeout = 30)
+            # 添加verify=False参数来绕过SSL证书验证
+            response = self.session.get(self.url , stream = True , allow_redirects = True , timeout = 30, verify=False)
             response.raise_for_status()
             downloaded_size = 0
             chunk_size = 8192
@@ -1504,15 +1508,17 @@ class ResourceParser(QThread) :
                 'scripts' : [] ,
                 'styles' : []
             }
+            
             # 提取图片资源
             for img in soup.find_all('img') :
-                for attr in ['src' , 'data-src' , 'srcset'] :
+                for attr in ['src' , 'data-src' , 'srcset' , 'data-original'] :
                     if img.get(attr) :
                         src = img[attr].split()[0] if attr == 'srcset' else img[attr]
                         img_url = urljoin(self.url , src)
                         if img_url not in resources['images'] :
                             resources['images'].append(img_url)
-            # 提取视频资源
+            
+            # 提取视频资源 - 标准标签
             for video in soup.find_all('video') :
                 for attr in ['src' , 'data-src'] :
                     if video.get(attr) :
@@ -1520,10 +1526,11 @@ class ResourceParser(QThread) :
                         if video_url not in resources['videos'] :
                             resources['videos'].append(video_url)
             for source in soup.find_all('source') :
-                if source.get('src') and 'video' in source.get('type' , '') :
+                if source.get('src') and ('video' in source.get('type' , '') or source.get('type') is None) :
                     video_url = urljoin(self.url , source['src'])
                     if video_url not in resources['videos'] :
                         resources['videos'].append(video_url)
+            
             # 提取音频资源
             for audio in soup.find_all('audio') :
                 for attr in ['src' , 'data-src'] :
@@ -1532,34 +1539,151 @@ class ResourceParser(QThread) :
                         if audio_url not in resources['audios'] :
                             resources['audios'].append(audio_url)
             for source in soup.find_all('source') :
-                if source.get('src') and 'audio' in source.get('type' , '') :
+                if source.get('src') and ('audio' in source.get('type' , '') or source.get('type') is None) :
                     audio_url = urljoin(self.url , source['src'])
                     if audio_url not in resources['audios'] :
                         resources['audios'].append(audio_url)
+            
             # 提取普通链接
             for link in soup.find_all('a') :
                 if link.get('href') and not link.get('href' , '#').startswith('#') :
                     link_url = urljoin(self.url , link['href'])
                     if link_url not in resources['links'] :
                         resources['links'].append(link_url)
+            
             # 提取脚本资源
             for script in soup.find_all('script') :
                 if script.get('src') :
                     script_url = urljoin(self.url , script['src'])
                     if script_url not in resources['scripts'] :
                         resources['scripts'].append(script_url)
+            
             # 提取样式资源
             for style in soup.find_all('link' , rel = 'stylesheet') :
                 if style.get('href') :
                     style_url = urljoin(self.url , style['href'])
                     if style_url not in resources['styles'] :
                         resources['styles'].append(style_url)
+            
+            # 增强功能：提取非标准标签中的媒体资源（特别针对抖音等现代网站）
+            self.extract_non_standard_media(soup, resources)
+            
             self.message_received.emit(
                 f"资源解析完成: 图片{len(resources['images'])}个, 视频{len(resources['videos'])}个, 音频{len(resources['audios'])}个")
             self.parsing_finished.emit(resources)
         except Exception as e :
             self.message_received.emit(f"资源解析失败: {str(e)}")
             self.parsing_finished.emit({})
+            
+    def extract_non_standard_media(self, soup, resources):
+        """提取非标准标签中的媒体资源，特别针对抖音等现代网站"""
+        # 检查所有包含data-*属性的标签
+        for tag in soup.find_all(lambda tag: any(attr.startswith('data-') for attr in tag.attrs)):
+            for attr, value in tag.attrs.items():
+                if attr.startswith('data-'):
+                    # 检查data属性中是否包含URL
+                    urls = self.extract_urls_from_string(str(value))
+                    for url in urls:
+                        if self.is_video_url(url) and url not in resources['videos']:
+                            resources['videos'].append(url)
+                        elif self.is_audio_url(url) and url not in resources['audios']:
+                            resources['audios'].append(url)
+                        elif self.is_image_url(url) and url not in resources['images']:
+                            resources['images'].append(url)
+        
+        # 检查所有class或id中包含关键词的标签
+        media_keywords = ['video', 'audio', 'player', 'media', 'content', 'source']
+        for keyword in media_keywords:
+            # 查找class中包含关键词的标签
+            for tag in soup.find_all(class_=lambda c: c and keyword in c.lower() if c else False):
+                for attr, value in tag.attrs.items():
+                    if isinstance(value, str):
+                        urls = self.extract_urls_from_string(value)
+                        for url in urls:
+                            if self.is_video_url(url) and url not in resources['videos']:
+                                resources['videos'].append(url)
+                            elif self.is_audio_url(url) and url not in resources['audios']:
+                                resources['audios'].append(url)
+        
+        # 检查script标签内容中的媒体URL
+        for script in soup.find_all('script'):
+            if script.string:
+                script_text = script.string
+                urls = self.extract_urls_from_string(script_text)
+                for url in urls:
+                    if self.is_video_url(url) and url not in resources['videos']:
+                        resources['videos'].append(url)
+                    elif self.is_audio_url(url) and url not in resources['audios']:
+                        resources['audios'].append(url)
+        
+        # 特别处理抖音可能使用的特定标签或属性
+        douyin_specific_tags = ['div', 'span']
+        douyin_specific_attrs = ['data-src', 'data-video', 'data-url', 'data-href', 'data-media']
+        
+        for tag_name in douyin_specific_tags:
+            for tag in soup.find_all(tag_name):
+                for attr in douyin_specific_attrs:
+                    if tag.get(attr):
+                        url = urljoin(self.url, tag[attr])
+                        if self.is_video_url(url) and url not in resources['videos']:
+                            resources['videos'].append(url)
+                        elif self.is_audio_url(url) and url not in resources['audios']:
+                            resources['audios'].append(url)
+        
+    def extract_urls_from_string(self, text):
+        """从文本中提取URL"""
+        # 基本URL正则表达式
+        url_pattern = r'https?://[^\s"\'<>]+'
+        urls = re.findall(url_pattern, text)
+        return urls
+        
+    def is_video_url(self, url):
+        """判断URL是否为视频URL"""
+        video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m3u8', '.ts']
+        video_keywords = ['video', 'mp4', 'stream', 'm3u8', 'vod', 'media']
+        
+        url_lower = url.lower()
+        # 检查文件扩展名
+        for ext in video_extensions:
+            if url_lower.endswith(ext) or ext in url_lower:
+                return True
+        # 检查URL中的关键词
+        for keyword in video_keywords:
+            if keyword in url_lower:
+                return True
+        return False
+        
+    def is_audio_url(self, url):
+        """判断URL是否为音频URL"""
+        audio_extensions = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a']
+        audio_keywords = ['audio', 'mp3', 'music', 'sound']
+        
+        url_lower = url.lower()
+        # 检查文件扩展名
+        for ext in audio_extensions:
+            if url_lower.endswith(ext) or ext in url_lower:
+                return True
+        # 检查URL中的关键词
+        for keyword in audio_keywords:
+            if keyword in url_lower:
+                return True
+        return False
+        
+    def is_image_url(self, url):
+        """判断URL是否为图片URL"""
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
+        image_keywords = ['image', 'img', 'photo', 'picture']
+        
+        url_lower = url.lower()
+        # 检查文件扩展名
+        for ext in image_extensions:
+            if url_lower.endswith(ext) or ext in url_lower:
+                return True
+        # 检查URL中的关键词
+        for keyword in image_keywords:
+            if keyword in url_lower:
+                return True
+        return False
 
 # 简易浏览器主窗口
 class BrowserWindow(QWidget) :
@@ -1613,9 +1737,23 @@ class BrowserWindow(QWidget) :
         splitter = QSplitter(Qt.Orientation.Vertical)
         # 网页视图
         self.web_view = QWebEngineView()
+        # 配置WebEngine设置以支持更多媒体格式
+        web_settings = self.web_view.settings()
+        # 启用JavaScript
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        # 启用媒体自动播放（需要用户交互后）
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+        web_settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
+        # 设置User-Agent (通过profile设置，而非settings)
+        profile = self.web_view.page().profile()
+        profile.setHttpUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+        
         self.web_view.setUrl(QUrl("https://www.baidu.com"))
         self.web_view.urlChanged.connect(self.update_url_bar)
         self.web_view.loadFinished.connect(self.on_page_loaded)
+        # 增加用户手势后恢复AudioContext的支持
+        self.web_view.page().javaScriptConsoleMessage = self.handle_javascript_console_message
         # 资源面板
         resource_panel = QGroupBox("页面资源")
         resource_layout = QVBoxLayout()
@@ -1634,6 +1772,7 @@ class BrowserWindow(QWidget) :
         self.resource_tabs.addTab(self.style_list , "样式")
         # 下载设置
         download_layout = QFormLayout()
+        # 下载路径
         self.download_path = QLineEdit()
         self.browse_download_btn = QPushButton("浏览...")
         self.browse_download_btn.clicked.connect(self.choose_download_path)
@@ -1641,6 +1780,17 @@ class BrowserWindow(QWidget) :
         path_layout.addWidget(self.download_path)
         path_layout.addWidget(self.browse_download_btn)
         download_layout.addRow("下载路径:" , path_layout)
+        # FFmpeg路径设置
+        self.ffmpeg_path_edit = QLineEdit()
+        self.browse_ffmpeg_btn = QPushButton("浏览...")
+        self.browse_ffmpeg_btn.clicked.connect(self.choose_ffmpeg_path)
+        self.find_ffmpeg_btn = QPushButton("自动查找")
+        self.find_ffmpeg_btn.clicked.connect(self.auto_find_ffmpeg)
+        ffmpeg_layout = QHBoxLayout()
+        ffmpeg_layout.addWidget(self.ffmpeg_path_edit)
+        ffmpeg_layout.addWidget(self.browse_ffmpeg_btn)
+        ffmpeg_layout.addWidget(self.find_ffmpeg_btn)
+        download_layout.addRow("FFmpeg路径:" , ffmpeg_layout)
         # 日志区域
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
@@ -1797,7 +1947,22 @@ class BrowserWindow(QWidget) :
             # 下载按钮
             download_btn = QPushButton("下载")
             download_btn.setMinimumWidth(60)
-            download_btn.clicked.connect(lambda checked , u=url : self.download_resource(u))
+            
+            # 根据资源类型连接不同的下载处理函数
+            if resource_type == 'video':
+                download_btn.clicked.connect(lambda checked, u=url: self.download_video(u))
+            elif resource_type == 'audio':
+                download_btn.clicked.connect(lambda checked, u=url: self.download_audio(u))
+            else:
+                download_btn.clicked.connect(lambda checked, u=url: self.download_resource(u))
+            
+            # 针对视频添加额外操作按钮（如果有FFmpeg）
+            if resource_type == 'video' and hasattr(self, 'ffmpeg_path') and self.ffmpeg_path:
+                convert_btn = QPushButton("转换")
+                convert_btn.setMinimumWidth(60)
+                convert_btn.clicked.connect(lambda checked, u=url: self.convert_video_dialog(u))
+                layout.addWidget(convert_btn)
+            
             layout.addWidget(label , 1)
             layout.addWidget(download_btn)
             # 添加到列表
@@ -1823,6 +1988,319 @@ class BrowserWindow(QWidget) :
         self.download_thread.message_received.connect(self.log)
         self.download_thread.download_completed.connect(self.on_download_complete)
         self.download_thread.start()
+        
+    def download_video(self, url):
+        """下载视频资源，支持不同格式"""
+        if not url:
+            self.log("无效的视频URL")
+            return
+            
+        # 确定下载路径
+        download_path = self.download_path.text().strip() or self.default_download_path
+        
+        # 停止当前可能的下载
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            self.download_thread.wait()
+            
+        # 检查URL是否为M3U8格式
+        is_m3u8 = url.lower().endswith('.m3u8') or 'm3u8' in url.lower()
+        
+        if is_m3u8:
+            # 使用M3U8下载线程
+            ffmpeg_path = getattr(self, 'ffmpeg_path', None) or "ffmpeg"
+            self.download_thread = M3U8VideoDownloadThread(url, download_path, ffmpeg_path)
+            self.log(f"开始下载M3U8视频: {url}")
+        else:
+            # 使用直接下载线程
+            self.download_thread = DirectVideoDownloadThread(url, download_path)
+            self.log(f"开始下载视频: {url}")
+            
+        # 连接信号
+        self.download_thread.progress_updated.connect(self.progress_bar.setValue)
+        self.download_thread.message_received.connect(self.log)
+        self.download_thread.download_completed.connect(self.on_download_complete)
+        self.download_thread.start()
+        
+    def download_audio(self, url):
+        """下载音频资源，支持通过FFmpeg转换格式"""
+        if not url:
+            self.log("无效的音频URL")
+            return
+            
+        # 确定下载路径
+        download_path = self.download_path.text().strip() or self.default_download_path
+        
+        # 停止当前可能的下载
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            self.download_thread.wait()
+            
+        # 使用音频下载线程
+        ffmpeg_path = getattr(self, 'ffmpeg_path', None) or "ffmpeg"
+        self.download_thread = AudioVideoDownloadThread(url, download_path, ffmpeg_path)
+        
+        # 连接信号
+        self.download_thread.progress_updated.connect(self.progress_bar.setValue)
+        self.download_thread.message_received.connect(self.log)
+        self.download_thread.download_completed.connect(self.on_download_complete)
+        self.download_thread.start()
+        self.log(f"开始下载音频: {url}")
+        
+    def find_ffmpeg(self):
+        """自动查找系统中的FFmpeg"""
+        try:
+            # 先尝试通过shutil.which查找
+            ffmpeg_path = shutil.which('ffmpeg')
+            if ffmpeg_path:
+                return os.path.abspath(ffmpeg_path)
+                
+            # 在Windows系统上额外检查常用路径
+            if sys.platform.startswith('win'):
+                # 检查PATH环境变量中的路径
+                paths = os.environ['PATH'].split(';')
+                for path in paths:
+                    ffmpeg_exe = os.path.join(path, 'ffmpeg.exe')
+                    if os.path.exists(ffmpeg_exe) and os.path.isfile(ffmpeg_exe):
+                        return os.path.abspath(ffmpeg_exe)
+                
+                # 检查常见安装目录
+                common_paths = [
+                        os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
+                        os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
+                        os.path.join(os.environ.get('LOCALAPPDATA', r'C:\Users\%USERNAME%\AppData\Local'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
+                        r'C:\ffmpeg\bin\ffmpeg.exe'
+                    ]
+                for path in common_paths:
+                    if os.path.exists(path):
+                        return os.path.abspath(path)
+                        
+            # 在其他系统上检查常见路径
+            else:
+                common_paths = [
+                    '/usr/bin/ffmpeg',
+                    '/usr/local/bin/ffmpeg',
+                    '/opt/homebrew/bin/ffmpeg',
+                    '/usr/local/Cellar/ffmpeg/*/bin/ffmpeg'
+                ]
+                for path in common_paths:
+                    if os.path.exists(path) and os.path.isfile(path):
+                        return os.path.abspath(path)
+                        
+            return ""
+        except Exception as e:
+            self.log(f"查找FFmpeg时出错: {str(e)}")
+            return ""
+            
+    def convert_video_dialog(self, url):
+        """显示视频转换对话框"""
+        # 检查FFmpeg是否可用
+        if not hasattr(self, 'ffmpeg_path') or not self.ffmpeg_path:
+            QMessageBox.warning(self, "警告", "未找到FFmpeg，无法进行视频转换")
+            return
+            
+        # 创建转换设置对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("视频转换设置")
+        dialog.resize(400, 200)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 输出格式选择
+        format_layout = QHBoxLayout()
+        format_label = QLabel("输出格式:")
+        format_combo = QComboBox()
+        format_combo.addItems(["mp4", "avi", "mov", "mkv", "webm"])
+        format_combo.setCurrentText("mp4")
+        format_layout.addWidget(format_label)
+        format_layout.addWidget(format_combo)
+        
+        # 质量选择
+        quality_layout = QHBoxLayout()
+        quality_label = QLabel("视频质量:")
+        quality_combo = QComboBox()
+        quality_combo.addItems(["高(无损)", "中", "低", "极低(压缩率高)"])
+        quality_combo.setCurrentIndex(1)  # 默认选择中等质量
+        quality_layout.addWidget(quality_label)
+        quality_layout.addWidget(quality_combo)
+        
+        # 转换按钮
+        convert_btn = QPushButton("开始转换")
+        convert_btn.clicked.connect(lambda: self.start_video_conversion(url, 
+                                                                      format_combo.currentText(), 
+                                                                      quality_combo.currentIndex(), 
+                                                                      dialog))
+        
+        layout.addLayout(format_layout)
+        layout.addLayout(quality_layout)
+        layout.addWidget(convert_btn)
+        
+        dialog.exec()
+        
+    def start_video_conversion(self, video_url, output_format, quality_level, dialog):
+        """开始视频转换"""
+        # 隐藏对话框
+        dialog.hide()
+        
+        # 确定下载路径
+        download_path = self.download_path.text().strip() or self.default_download_path
+        
+        # 停止当前可能的下载/转换
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            self.download_thread.wait()
+            
+        # 检查URL是否为M3U8格式
+        is_m3u8 = video_url.lower().endswith('.m3u8') or 'm3u8' in video_url.lower()
+        
+        # 设置质量参数
+        quality_preset = ["ultrafast", "fast", "medium", "slow"][quality_level]
+        crf = [0, 23, 28, 33][quality_level]  # 0-51，数值越小质量越好
+        
+        if is_m3u8:
+            # 使用M3U8下载线程进行转换
+            self.download_thread = M3U8VideoDownloadThread(
+                video_url, download_path, self.ffmpeg_path, 
+                convert_to_mp4=(output_format == "mp4")
+            )
+        else:
+            # 创建临时文件用于直接下载后转换
+            self.log("先下载视频文件，然后进行转换...")
+            temp_file_name = f"temp_{uuid.uuid4().hex}.download"
+            temp_path = os.path.join(download_path, temp_file_name)
+            
+            # 使用直接下载线程下载原始视频
+            self.download_thread = DirectVideoDownloadThread(
+                video_url, download_path, temp_file_name, expected_ext="download"
+            )
+            
+            # 保存转换参数，供下载完成后使用
+            self.conversion_params = {
+                "temp_path": temp_path,
+                "output_format": output_format,
+                "quality_preset": quality_preset,
+                "crf": crf
+            }
+            
+            # 重写下载完成信号处理
+            original_on_complete = self.on_download_complete
+            
+            def on_download_and_convert_complete(success, message):
+                if success:
+                    # 下载成功，开始转换
+                    self.log("下载完成，开始转换视频格式...")
+                    self.convert_downloaded_video(
+                        self.conversion_params["temp_path"],
+                        download_path,
+                        self.conversion_params["output_format"],
+                        self.conversion_params["quality_preset"],
+                        self.conversion_params["crf"]
+                    )
+                else:
+                    # 下载失败，直接调用原始处理函数
+                    original_on_complete(success, message)
+                
+            self.download_thread.download_completed.disconnect()
+            self.download_thread.download_completed.connect(on_download_and_convert_complete)
+        
+        # 连接其他信号
+        self.download_thread.progress_updated.connect(self.progress_bar.setValue)
+        self.download_thread.message_received.connect(self.log)
+        if not is_m3u8:
+            # 对于非M3U8视频，我们已经重写了完成信号处理
+            pass
+        else:
+            # 对于M3U8视频，使用原始完成信号处理
+            self.download_thread.download_completed.connect(self.on_download_complete)
+        
+        self.download_thread.start()
+        dialog.accept()
+        
+    def convert_downloaded_video(self, input_path, output_dir, output_format, quality_preset, crf):
+        """转换已下载的视频文件"""
+        try:
+            # 生成输出文件名
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            output_filename = f"{base_name}.{output_format}"
+            output_path = os.path.join(output_dir, output_filename)
+            
+            # 检查文件是否已存在
+            counter = 1
+            while os.path.exists(output_path):
+                output_filename = f"{base_name}_{counter}.{output_format}"
+                output_path = os.path.join(output_dir, output_filename)
+                counter += 1
+            
+            # 构建FFmpeg命令
+            cmd = [
+                self.ffmpeg_path,
+                '-y',  # 覆盖现有文件
+                '-i', input_path,
+                '-preset', quality_preset,
+                '-crf', str(crf),
+                '-c:v', 'libx264',  # 使用H.264编码器
+                '-c:a', 'aac',       # 使用AAC音频编码器
+                output_path
+            ]
+            
+            self.log(f"开始转换视频: {input_path} -> {output_path}")
+            self.log(f"转换参数: 预设={quality_preset}, CRF={crf}")
+            
+            # 启动转换进程
+            self.conversion_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith('win') else 0
+            )
+            
+            # 监控转换进度
+            last_progress = 0
+            while True:
+                line = self.conversion_process.stdout.readline()
+                if not line and self.conversion_process.poll() is not None:
+                    break
+                
+                # 尝试解析进度信息
+                if 'frame=' in line:
+                    # 提取时间信息
+                    time_match = re.search(r'time=([\d:\.]+)', line)
+                    if time_match:
+                        time_str = time_match.group(1)
+                        h, m, s = map(float, time_str.split(':'))
+                        total_seconds = h * 3600 + m * 60 + s
+                        # 这里简化处理，实际应该获取总时长，但需要额外的FFprobe命令
+                        # 这里使用估计的进度
+                        progress = min(95, int((total_seconds / (total_seconds + 10)) * 100))
+                        if progress > last_progress:
+                            self.progress_bar.setValue(progress)
+                            last_progress = progress
+                
+                self.log(f"转换中: {line.strip()}")
+            
+            # 检查转换结果
+            if self.conversion_process.returncode == 0:
+                # 转换成功，删除临时文件
+                if os.path.exists(input_path):
+                    try:
+                        os.remove(input_path)
+                        self.log(f"已删除临时文件: {input_path}")
+                    except Exception as e:
+                        self.log(f"删除临时文件失败: {str(e)}")
+                
+                self.progress_bar.setValue(100)
+                self.log(f"视频转换完成，保存至: {output_path}")
+                QMessageBox.information(self, "转换完成", f"视频已成功转换并保存至:\n{output_path}")
+            else:
+                self.log(f"视频转换失败，返回码: {self.conversion_process.returncode}")
+                QMessageBox.critical(self, "转换失败", f"视频转换失败\n请查看日志获取详细信息")
+                
+        except Exception as e:
+            self.log(f"视频转换过程中出错: {str(e)}")
+            QMessageBox.critical(self, "转换错误", f"视频转换过程中发生错误:\n{str(e)}")
+        finally:
+            self.conversion_process = None
     def on_download_complete(self , success , message) :
         """下载完成回调"""
         self.log(message)
@@ -1870,15 +2348,85 @@ class BrowserWindow(QWidget) :
         self.download_path.setText(settings.value("download_path" , self.default_download_path))
         home_page = settings.value("home_page" , "https://www.baidu.com")
         self.web_view.setUrl(QUrl(home_page))
+        
+        # 加载FFmpeg路径设置
+        self.ffmpeg_path = settings.value("ffmpeg_path" , "")
+        # 设置FFmpeg路径编辑框
+        if hasattr(self, 'ffmpeg_path_edit'):
+            self.ffmpeg_path_edit.setText(self.ffmpeg_path)
+        # 如果未设置FFmpeg路径，尝试自动查找
+        if not self.ffmpeg_path or not os.path.exists(self.ffmpeg_path):
+            self.ffmpeg_path = self.find_ffmpeg()
+            if self.ffmpeg_path:
+                if hasattr(self, 'ffmpeg_path_edit'):
+                    self.ffmpeg_path_edit.setText(self.ffmpeg_path)
+                self.log(f"自动检测到FFmpeg: {self.ffmpeg_path}")
+            else:
+                self.log("警告: 未找到FFmpeg，某些媒体功能可能受限")
+            # 尝试从环境变量中获取
+            self.ffmpeg_path = os.environ.get("FFMPEG_PATH", "ffmpeg")
+        
+    def choose_ffmpeg_path(self):
+        """选择FFmpeg可执行文件路径"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择FFmpeg可执行文件", 
+            os.path.dirname(self.ffmpeg_path) if self.ffmpeg_path else "",
+            "可执行文件 (*.exe);;所有文件 (*)"
+        )
+        if path:
+            self.ffmpeg_path_edit.setText(path)
+            self.ffmpeg_path = path
+            self.log(f"已设置FFmpeg路径: {path}")
+            
+    def auto_find_ffmpeg(self):
+        """自动查找FFmpeg可执行文件"""
+        self.log("开始自动查找FFmpeg...")
+        ffmpeg_path = self.find_ffmpeg()
+        if ffmpeg_path:
+            self.ffmpeg_path_edit.setText(ffmpeg_path)
+            self.ffmpeg_path = ffmpeg_path
+            self.log(f"自动找到了FFmpeg: {ffmpeg_path}")
+        else:
+            self.log("未找到FFmpeg。请手动指定路径。")
     def save_settings(self) :
         """保存设置"""
         settings = QSettings("SimpleBrowser" , "Settings")
         settings.setValue("download_path" , self.download_path.text())
         settings.setValue("home_page" , self.url_bar.text())
+        # 从编辑框中获取最新的FFmpeg路径
+        if hasattr(self, 'ffmpeg_path_edit') and self.ffmpeg_path_edit.text():
+            self.ffmpeg_path = self.ffmpeg_path_edit.text()
+        # 保存FFmpeg路径设置
+        if hasattr(self, 'ffmpeg_path'):
+            settings.setValue("ffmpeg_path" , self.ffmpeg_path)
     def closeEvent(self , event) :
         """窗口关闭时保存设置"""
         self.save_settings()
         event.accept()
+        
+    def handle_javascript_console_message(self, level, message, line_number, source_id):
+        """处理JavaScript控制台消息，特别是关于AudioContext和媒体格式的问题"""
+        # 处理AudioContext需要用户交互的问题
+        if 'AudioContext' in message and 'must be resumed' in message:
+            # 尝试在页面加载完成后自动恢复AudioContext
+            self.web_view.page().runJavaScript("""
+                if (window.audioContext && window.audioContext.state === 'suspended') {
+                    window.audioContext.resume().catch(e => console.log('Failed to resume AudioContext:', e));
+                }
+                // 监听用户交互事件后恢复AudioContext
+                document.addEventListener('click', function resumeAudioContext() {
+                    if (window.audioContext && window.audioContext.state === 'suspended') {
+                        window.audioContext.resume().catch(e => console.log('Failed to resume AudioContext:', e));
+                    }
+                    document.removeEventListener('click', resumeAudioContext);
+                });
+            """)
+        elif 'contentType' in message and 'not supported' in message:
+            # 处理视频格式不支持的问题
+            self.log(f"警告: 检测到不支持的视频格式，可能需要安装额外的编解码器")
+        elif 'HEVC' in message or 'H.265' in message:
+            # 处理HEVC编解码器警告
+            self.log(f"警告: 检测到HEVC/H.265编码视频，如无法播放请确保安装了HEVC编解码器")
 
 # 自定义ComboBox，可精确控制下拉列表高度
 class FixedHeightComboBox(QComboBox):
