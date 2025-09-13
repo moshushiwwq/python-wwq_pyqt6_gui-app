@@ -1685,14 +1685,73 @@ class ResourceParser(QThread) :
                 return True
         return False
 
-# 简易浏览器主窗口
+class CustomWebEnginePage(QWebEnginePage):
+    """自定义WebEnginePage类，用于处理页面请求和JavaScript控制台消息"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.browser_window = parent
+        # 连接信号
+        self.featurePermissionRequested.connect(self.handle_feature_permission_requested)
+        # 连接JavaScript控制台消息信号
+        self.javaScriptConsoleMessage = self.handle_javascript_console_message
+        
+    def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
+        """处理页面导航请求"""
+        # 可以在这里拦截和处理特殊的导航请求
+        return super().acceptNavigationRequest(url, navigation_type, is_main_frame)
+        
+    def handle_feature_permission_requested(self, url, feature):
+        """处理特性权限请求（如摄像头、麦克风等）"""
+        # 根据特性类型决定是否授予权限
+        if feature in [QWebEnginePage.Feature.MediaAudioCapture, QWebEnginePage.Feature.MediaVideoCapture]:
+            # 对于媒体捕获，默认拒绝
+            self.setFeaturePermission(url, feature, QWebEnginePage.PermissionPolicy.PermissionDeniedByUser)
+        else:
+            # 其他特性也默认拒绝
+            self.setFeaturePermission(url, feature, QWebEnginePage.PermissionPolicy.PermissionDeniedByUser)
+        
+    def handle_javascript_console_message(self, level, message, line_number, source_id):
+        """处理JavaScript控制台消息，智能过滤常见警告"""
+        # 过滤掉常见的不需要显示的警告
+        filtered_messages = [
+            "AudioContext was not allowed to start",
+            "The AudioContext was not allowed to start",
+            "Too many active WebGL contexts",
+            "playPromise.catch NotAllowedError",
+            "playPromise.catch AbortError"
+        ]
+        
+        # 检查是否是需要过滤的消息
+        should_filter = any(filtered_msg in message for filtered_msg in filtered_messages)
+        
+        # 如果是过滤的消息，直接返回（不记录）
+        if should_filter:
+            return
+        
+        # 对于其他消息，根据级别决定是否显示
+        if self.browser_window:
+            try:
+                # 尝试使用正确的枚举值判断消息级别
+                if hasattr(QWebEnginePage.JavaScriptConsoleMessageLevel, 'ErrorMessage') and level == QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessage:
+                    self.browser_window.log(f"[JS Error] {source_id}({line_number}): {message}")
+                elif hasattr(QWebEnginePage.JavaScriptConsoleMessageLevel, 'WarningMessage') and level == QWebEnginePage.JavaScriptConsoleMessageLevel.WarningMessage:
+                    self.browser_window.log(f"[JS Warning] {source_id}({line_number}): {message}")
+                elif hasattr(QWebEnginePage.JavaScriptConsoleMessageLevel, 'InfoMessage') and level == QWebEnginePage.JavaScriptConsoleMessageLevel.InfoMessage:
+                    self.browser_window.log(f"[JS Info] {source_id}({line_number}): {message}")
+                else:
+                    # 对于未知的消息级别，简单记录
+                    self.browser_window.log(f"[JS Console] {source_id}({line_number}): {message}")
+            except AttributeError:
+                # 如果枚举值不存在，使用简单的记录方式
+                self.browser_window.log(f"[JS Console] {source_id}({line_number}): {message}")
+
 class BrowserWindow(QWidget) :
-    """简易浏览器主窗口"""
+    """资源提取与下载工具 - 使用Windows系统内置浏览器"""
     def __init__(self , parent=None) :
         super().__init__(parent)
         self.parent = parent
         self.setWindowFlags(Qt.WindowType.Window)
-        self.setWindowTitle("简易浏览器 - 资源提取与下载")
+        self.setWindowTitle("资源提取与下载工具")
         self.setMinimumSize(600 , 600)
         # 初始化变量
         self.download_thread = None
@@ -1735,25 +1794,20 @@ class BrowserWindow(QWidget) :
         main_layout.addLayout(nav_layout)
         # 主内容区（拆分窗口）
         splitter = QSplitter(Qt.Orientation.Vertical)
-        # 网页视图
-        self.web_view = QWebEngineView()
-        # 配置WebEngine设置以支持更多媒体格式
-        web_settings = self.web_view.settings()
-        # 启用JavaScript
-        web_settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        # 启用媒体自动播放（需要用户交互后）
-        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
-        web_settings.setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
-        web_settings.setAttribute(QWebEngineSettings.WebAttribute.AllowRunningInsecureContent, True)
-        # 设置User-Agent (通过profile设置，而非settings)
-        profile = self.web_view.page().profile()
-        profile.setHttpUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
         
-        self.web_view.setUrl(QUrl("https://www.baidu.com"))
-        self.web_view.urlChanged.connect(self.update_url_bar)
-        self.web_view.loadFinished.connect(self.on_page_loaded)
-        # 增加用户手势后恢复AudioContext的支持
-        self.web_view.page().javaScriptConsoleMessage = self.handle_javascript_console_message
+        # 添加Chrome内核内置浏览器组件
+        self.web_view = QWebEngineView()
+        # 创建自定义页面
+        self.web_page = CustomWebEnginePage(self)
+        self.web_view.setPage(self.web_page)
+        # 连接信号和槽
+        self.web_view.loadStarted.connect(self.load_started)
+        self.web_view.loadProgress.connect(self.load_progress)
+        self.web_view.loadFinished.connect(self.load_finished)
+        self.web_view.urlChanged.connect(self.url_changed)
+        # 设置浏览器设置
+        self.setup_browser_settings()
+        
         # 资源面板
         resource_panel = QGroupBox("页面资源")
         resource_layout = QVBoxLayout()
@@ -1808,6 +1862,9 @@ class BrowserWindow(QWidget) :
         splitter.addWidget(resource_panel)
         splitter.setSizes([600 , 400])  # 设置初始大小比例
         main_layout.addWidget(splitter)
+        
+        # 初始化URL栏
+        self.url_bar.setText("https://www.baidu.com")
     def setup_styles(self) :
         """设置界面样式"""
         self.setStyleSheet("""
@@ -1880,41 +1937,249 @@ class BrowserWindow(QWidget) :
         font.setPointSize(10)
         self.log_display.setFont(font)
     def navigate(self) :
-        """导航到URL栏中的地址"""
+        """使用内置Chrome内核浏览器导航到URL栏中的地址"""
         url = self.url_bar.text().strip()
         if not url.startswith(('http://' , 'https://')) :
             url = f'http://{url}'
-        self.web_view.setUrl(QUrl(url))
-    def update_url_bar(self , qurl) :
-        """更新URL栏显示"""
-        self.url_bar.setText(qurl.toString())
-        self.current_url = qurl.toString()
-        # 更新历史记录
-        if self.history and self.history[-1] == self.current_url :
-            return
-        self.history = self.history[:self.history_index + 1]
-        self.history.append(self.current_url)
-        self.history_index = len(self.history) - 1
-        self.update_nav_buttons()
-    def on_page_loaded(self , success) :
-        """页面加载完成后执行"""
-        if success :
-            self.log(f"页面加载完成: {self.current_url}")
-            # 获取页面内容并解析资源
-            self.web_view.page().toHtml(self.parse_page_resources)
-        else :
-            self.log(f"页面加载失败: {self.current_url}")
+        
+        try:
+            # 记录日志
+            self.log(f"使用内置Chrome内核浏览器打开: {url}")
+            
+            # 使用内置浏览器打开URL
+            self.web_view.setUrl(QUrl(url))
+            
+            # 更新URL和历史记录
+            self.current_url = url
+            if self.history and self.history[-1] == self.current_url :
+                return
+            self.history = self.history[:self.history_index + 1]
+            self.history.append(self.current_url)
+            self.history_index = len(self.history) - 1
+            self.update_nav_buttons()
+            
+        except Exception as e:
+            self.log(f"打开链接时出错: {str(e)}")
+            # 使用Windows API显示错误消息
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"无法使用系统浏览器打开链接: {url}\n\n错误信息: {str(e)}",
+                "打开链接失败",
+                0x10  # MB_ICONERROR
+            )
+    
+    def is_video_url(self, url):
+        """检查URL是否为视频文件"""
+        video_extensions = ['.mp4', '.avi', '.mov', '.wmv', '.flv', '.mkv', '.webm']
+        return any(url.lower().endswith(ext) for ext in video_extensions)
+    
+    def is_audio_url(self, url):
+        """检查URL是否为音频文件"""
+        audio_extensions = ['.mp3', '.wav', '.ogg', '.flac', '.aac', '.wma']
+        return any(url.lower().endswith(ext) for ext in audio_extensions)
+    
+    def is_image_url(self, url):
+        """检查URL是否为图片文件"""
+        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp']
+        return any(url.lower().endswith(ext) for ext in image_extensions)
+    
+    def try_parse_url_resources(self, url):
+        """尝试直接解析URL中的资源"""
+        # 检查是否为媒体文件URL
+        if self.is_video_url(url):
+            self.log(f"检测到视频URL，自动添加到资源列表")
+            self.video_list.clear()
+            self.add_resources_to_list(self.video_list, [url], 'video')
+        elif self.is_audio_url(url):
+            self.log(f"检测到音频URL，自动添加到资源列表")
+            self.audio_list.clear()
+            self.add_resources_to_list(self.audio_list, [url], 'audio')
+        elif self.is_image_url(url):
+            self.log(f"检测到图片URL，自动添加到资源列表")
+            self.image_list.clear()
+            self.add_resources_to_list(self.image_list, [url], 'image')
+        else:
+            # 对于普通网页，可以提示用户手动提取资源
+            self.log(f"普通网页URL，请手动提取资源")
+    
+    def update_nav_buttons(self):
+        """更新导航按钮状态"""
+        self.back_btn.setEnabled(self.history_index > 0)
+        self.forward_btn.setEnabled(self.history_index < len(self.history) - 1)
+    
+    def load_started(self):
+        """页面开始加载时调用"""
         self.progress_bar.setValue(0)
-    def parse_page_resources(self , html) :
-        """解析页面资源"""
-        # 停止当前可能的解析线程
-        if self.parser_thread and self.parser_thread.isRunning() :
-            self.parser_thread.terminate()
-        # 启动新的解析线程
-        self.parser_thread = ResourceParser(self.current_url , html)
-        self.parser_thread.parsing_finished.connect(self.display_resources)
-        self.parser_thread.message_received.connect(self.log)
-        self.parser_thread.start()
+        self.progress_bar.show()
+        
+    def load_progress(self, progress):
+        """页面加载进度更新时调用"""
+        self.progress_bar.setValue(progress)
+        
+    def load_finished(self, success):
+        """页面加载完成时调用"""
+        self.progress_bar.hide()
+        if success:
+            # 页面加载成功后，可以执行一些操作，如自动提取资源
+            current_url = self.web_view.url().toString()
+            self.try_parse_url_resources(current_url)
+        else:
+            self.log(f"页面加载失败")
+            
+    def url_changed(self, url):
+        """URL变更时调用"""
+        new_url = url.toString()
+        if new_url != self.url_bar.text():
+            self.url_bar.setText(new_url)
+            
+    def setup_browser_settings(self):
+        """设置浏览器的各种配置，优化兼容性和性能，减少JavaScript警告"""
+        # 获取浏览器设置
+        settings = self.web_view.settings()
+        
+        # 启用JavaScript
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        
+        # 启用本地存储
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        
+        # 启用自动加载图片
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AutoLoadImages, True)
+        
+        # 启用插件
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+        
+        # 启用音频播放（可能需要用户交互）
+        settings.setAttribute(QWebEngineSettings.WebAttribute.AllowWindowActivationFromJavaScript, True)
+        
+        # 尝试启用各种高级功能，使用try-except处理可能不支持的属性
+        # 启用WebGL支持
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 启用加速2D画布
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.Accelerated2dCanvasEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 启用CSS动画
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.CSSAnimationEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 启用平滑滚动
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 针对AudioContext需要用户交互的警告，禁用自动播放媒体
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.AutoPlayPolicy, QWebEngineSettings.AutoPlayPolicy.Default)
+        except AttributeError:
+            pass
+            
+        # 针对WebGL上下文过多的警告，尝试限制WebGL相关设置
+        try:
+            # 禁用WebGL的多重采样，减少资源使用
+            settings.setAttribute(QWebEngineSettings.WebAttribute.WebGLEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 启用HTML5视频支持
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
+        except AttributeError:
+            pass
+            
+        # 优化JavaScript执行环境
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavaScriptCanAccessClipboard, False)
+        except AttributeError:
+            pass
+            
+        try:
+            settings.setAttribute(QWebEngineSettings.WebAttribute.JavaScriptCanOpenWindows, False)
+        except AttributeError:
+            pass
+        
+        # 设置网站兼容性模式为最新
+        from PyQt6.QtWebEngineCore import QWebEngineProfile
+        profile = QWebEngineProfile.defaultProfile()
+        
+        # 设置现代浏览器用户代理字符串，解决版本过低问题
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+        try:
+            profile.setHttpUserAgent(user_agent)
+        except AttributeError:
+            # 尝试另一种设置用户代理的方法
+            try:
+                profile.setUserAgent(user_agent)
+            except AttributeError:
+                pass
+        
+        # 禁用缓存以确保获取最新版本的页面
+        try:
+            profile.setHttpCacheType(QWebEngineProfile.HttpCacheType.NoCache)
+        except AttributeError:
+            pass
+        
+        # 设置最大同时连接数
+        try:
+            profile.setHttpNetworkAccessManagerCacheSize(0)
+        except AttributeError:
+            pass
+            
+        # 设置JavaScript控制台消息处理方式
+        try:
+            # 这将有助于控制JavaScript控制台消息的处理
+            pass
+        except AttributeError:
+            pass
+        
+    def go_back(self):
+        """返回上一个页面"""
+        if self.web_view.canGoBack():
+            self.web_view.back()
+        elif self.history_index > 0:
+            self.history_index -= 1
+            url = self.history[self.history_index]
+            self.url_bar.setText(url)
+            self.navigate()
+    
+    def go_forward(self):
+        """前进到下一个页面"""
+        if self.web_view.canGoForward():
+            self.web_view.forward()
+        elif self.history_index < len(self.history) - 1:
+            self.history_index += 1
+            url = self.history[self.history_index]
+            self.url_bar.setText(url)
+            self.navigate()
+    
+    def refresh_page(self):
+        """刷新当前页面"""
+        self.web_view.reload()
+    
+    def go_home(self):
+        """返回主页"""
+        home_url = "https://www.baidu.com"
+        self.web_view.setUrl(QUrl(home_url))
+    
+    def log(self, message):
+        """记录日志信息"""
+        import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.log_display.append(f"[{current_time}] {message}")
+        # 滚动到底部
+        self.log_display.verticalScrollBar().setValue(self.log_display.verticalScrollBar().maximum())
+    # 更新URL栏和页面加载相关方法已移除，现在使用Windows系统内置浏览器
+    # 资源解析功能保留但不再自动执行，用户可以通过其他方式添加资源
     def display_resources(self , resources) :
         """显示解析到的资源"""
         # 清空现有列表
@@ -2064,16 +2329,45 @@ class BrowserWindow(QWidget) :
                     if os.path.exists(ffmpeg_exe) and os.path.isfile(ffmpeg_exe):
                         return os.path.abspath(ffmpeg_exe)
                 
-                # 检查常见安装目录
+                # 检查常见安装目录 - 包括C盘和D盘
                 common_paths = [
+                        # C盘常见路径
                         os.path.join(os.environ.get('ProgramFiles', r'C:\Program Files'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
                         os.path.join(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
                         os.path.join(os.environ.get('LOCALAPPDATA', r'C:\Users\%USERNAME%\AppData\Local'), 'ffmpeg', 'bin', 'ffmpeg.exe'),
-                        r'C:\ffmpeg\bin\ffmpeg.exe'
+                        r'C:\ffmpeg\bin\ffmpeg.exe',
+                        # D盘常见路径
+                        r'D:\ffmpeg\bin\ffmpeg.exe',
+                        r'D:\Program Files\ffmpeg\bin\ffmpeg.exe',
+                        r'D:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+                        r'D:\Tools\ffmpeg\bin\ffmpeg.exe',
+                        # 检查D盘根目录下的所有可能的ffmpeg文件夹
+                        os.path.join('D:', 'ffmpeg', 'bin', 'ffmpeg.exe'),
+                        # 检查用户可能存放ffmpeg的常用位置
+                        os.path.join(os.path.expanduser('~'), 'Downloads', 'ffmpeg', 'bin', 'ffmpeg.exe'),
+                        os.path.join(os.path.expanduser('~'), 'Desktop', 'ffmpeg', 'bin', 'ffmpeg.exe')
                     ]
+                
+                # 搜索所有可能的路径
                 for path in common_paths:
+                    # 处理可能包含%USERNAME%的路径
+                    if '%USERNAME%' in path:
+                        path = os.path.expandvars(path)
                     if os.path.exists(path):
                         return os.path.abspath(path)
+                
+                # 尝试搜索D盘上所有名为ffmpeg.exe的文件
+                try:
+                    if os.path.exists('D:'):
+                        import fnmatch
+                        for root, dirnames, filenames in os.walk('D:'):
+                            if 'ffmpeg.exe' in filenames:
+                                ffmpeg_path = os.path.join(root, 'ffmpeg.exe')
+                                # 避免返回系统临时文件或其他非预期位置
+                                if 'temp' not in root.lower() and 'cache' not in root.lower():
+                                    return os.path.abspath(ffmpeg_path)
+                except Exception as e:
+                    self.log(f"D盘搜索过程中出现错误: {str(e)}")
                         
             # 在其他系统上检查常见路径
             else:
@@ -2314,28 +2608,7 @@ class BrowserWindow(QWidget) :
         self.log_display.verticalScrollBar().setValue(
             self.log_display.verticalScrollBar().maximum()
         )
-    def go_back(self) :
-        """后退"""
-        if self.history_index > 0 :
-            self.history_index -= 1
-            self.web_view.setUrl(QUrl(self.history[self.history_index]))
-            self.update_nav_buttons()
-    def go_forward(self) :
-        """前进"""
-        if self.history_index < len(self.history) - 1 :
-            self.history_index += 1
-            self.web_view.setUrl(QUrl(self.history[self.history_index]))
-            self.update_nav_buttons()
-    def refresh_page(self) :
-        """刷新当前页面"""
-        self.web_view.reload()
-    def go_home(self) :
-        """回到主页"""
-        self.web_view.setUrl(QUrl("https://www.baidu.com"))
-    def update_nav_buttons(self) :
-        """更新导航按钮状态"""
-        self.back_btn.setEnabled(self.history_index > 0)
-        self.forward_btn.setEnabled(self.history_index < len(self.history) - 1)
+    # 旧的导航方法已移除，新的实现请参考navigate方法附近的代码
     def choose_download_path(self) :
         """选择下载路径"""
         path = QFileDialog.getExistingDirectory(self , "选择下载路径" , self.default_download_path)
@@ -2347,7 +2620,7 @@ class BrowserWindow(QWidget) :
         settings = QSettings("SimpleBrowser" , "Settings")
         self.download_path.setText(settings.value("download_path" , self.default_download_path))
         home_page = settings.value("home_page" , "https://www.baidu.com")
-        self.web_view.setUrl(QUrl(home_page))
+        self.url_bar.setText(home_page)  # 设置URL栏显示主页URL
         
         # 加载FFmpeg路径设置
         self.ffmpeg_path = settings.value("ffmpeg_path" , "")
@@ -2405,28 +2678,9 @@ class BrowserWindow(QWidget) :
         event.accept()
         
     def handle_javascript_console_message(self, level, message, line_number, source_id):
-        """处理JavaScript控制台消息，特别是关于AudioContext和媒体格式的问题"""
-        # 处理AudioContext需要用户交互的问题
-        if 'AudioContext' in message and 'must be resumed' in message:
-            # 尝试在页面加载完成后自动恢复AudioContext
-            self.web_view.page().runJavaScript("""
-                if (window.audioContext && window.audioContext.state === 'suspended') {
-                    window.audioContext.resume().catch(e => console.log('Failed to resume AudioContext:', e));
-                }
-                // 监听用户交互事件后恢复AudioContext
-                document.addEventListener('click', function resumeAudioContext() {
-                    if (window.audioContext && window.audioContext.state === 'suspended') {
-                        window.audioContext.resume().catch(e => console.log('Failed to resume AudioContext:', e));
-                    }
-                    document.removeEventListener('click', resumeAudioContext);
-                });
-            """)
-        elif 'contentType' in message and 'not supported' in message:
-            # 处理视频格式不支持的问题
-            self.log(f"警告: 检测到不支持的视频格式，可能需要安装额外的编解码器")
-        elif 'HEVC' in message or 'H.265' in message:
-            # 处理HEVC编解码器警告
-            self.log(f"警告: 检测到HEVC/H.265编码视频，如无法播放请确保安装了HEVC编解码器")
+        """处理JavaScript控制台消息，由于现在使用系统浏览器，此方法不再有效"""
+        # 使用系统浏览器后，无法直接操作页面JavaScript
+        pass
 
 # 自定义ComboBox，可精确控制下拉列表高度
 class FixedHeightComboBox(QComboBox):
@@ -2517,6 +2771,79 @@ class M3U8VideoDownloadThread(VideoDownloadThread):
                     self.message_received.emit(f"解析m3u8出错: {str(e)}")
 
         return segments
+        
+    def parse_m3u8_file(self, url):
+        """下载并解析M3U8文件获取TS片段列表"""
+        try:
+            self.message_received.emit(f"正在解析M3U8文件: {url}")
+            
+            # 发送请求获取M3U8内容
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # 处理可能的编码问题
+            m3u8_content = response.text
+            
+            # 解析M3U8内容获取TS片段
+            segments = self.parse_m3u8(m3u8_content, url)
+            
+            return segments
+        except Exception as e:
+            self.message_received.emit(f"下载或解析M3U8文件失败: {str(e)}")
+            return []
+            
+    def download_ts_segments(self, segments, temp_dir):
+        """下载所有TS片段"""
+        downloaded_files = []
+        
+        if not segments:
+            return downloaded_files
+            
+        # 设置请求头
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+        }
+        
+        session = requests.Session()
+        
+        for i, segment_url in enumerate(segments):
+            if self.stop_requested:
+                break
+                
+            try:
+                # 生成文件名
+                segment_filename = f"segment_{i:05d}.ts"
+                segment_path = os.path.join(temp_dir, segment_filename)
+                
+                # 下载片段
+                self.message_received.emit(f"下载片段 {i+1}/{self.total_segments}: {segment_url}")
+                
+                response = session.get(segment_url, headers=headers, stream=True, timeout=30)
+                response.raise_for_status()
+                
+                # 写入文件
+                with open(segment_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                downloaded_files.append(segment_path)
+                self.downloaded_segments += 1
+                
+                # 更新进度
+                progress = int((self.downloaded_segments / self.total_segments) * 90)  # 留10%给合并
+                self.progress_updated.emit(progress)
+                
+            except Exception as e:
+                self.message_received.emit(f"下载片段 {i+1} 失败: {str(e)}")
+                # 继续尝试下载其他片段
+                continue
+                
+        return downloaded_files
 
     def merge_ts_files(self, ts_files, output_path):
         """合并TS文件"""
@@ -2909,19 +3236,42 @@ class AudioVideoDownloadThread(VideoDownloadThread):
             if file_size > 0 and os.path.getsize(output_path) != file_size:
                 self.message_received.emit(f"警告: 下载文件大小与预期不符 ({os.path.getsize(output_path)}/{file_size})")
 
-            # 如果是需要转换的格式，使用FFmpeg转换
-            if self.ffmpeg_path and ext not in ['mp3', 'wav']:
-                self.message_received.emit("开始转换音频格式...")
-                converted_path = os.path.splitext(output_path)[0] + ".mp3"
+            # 优化的音频转换逻辑，支持更多格式
+            if self.ffmpeg_path:
+                # 定义支持的输入格式列表
+                supported_input_formats = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
+                
+                # 定义输出格式优先级，优先保持原有格式，否则转换为mp3
+                output_format = ext if ext in supported_input_formats else 'mp3'
+                converted_path = os.path.splitext(output_path)[0] + f".{output_format}"
+                
+                # 无论原始格式是什么，都尝试使用FFmpeg进行处理，确保兼容性
+                self.message_received.emit(f"开始处理音频格式: {ext} -> {output_format}")
+                
+                # 构建针对不同格式优化的FFmpeg命令
                 cmd = [
                     self.ffmpeg_path,
-                    '-y',
-                    '-i', output_path,
-                    '-vn',
-                    '-c:a', 'libmp3lame',
-                    '-q:a', '2',
-                    converted_path
+                    '-y',  # 覆盖现有文件
+                    '-i', output_path,  # 输入文件
+                    '-vn',  # 禁用视频流
                 ]
+                
+                # 根据目标格式设置不同的编码参数
+                if output_format == 'mp3':
+                    cmd.extend(['-c:a', 'libmp3lame', '-q:a', '2'])  # MP3高质量设置
+                elif output_format == 'wav':
+                    cmd.extend(['-c:a', 'pcm_s16le', '-ar', '44100'])  # WAV无损格式
+                elif output_format == 'm4a':
+                    cmd.extend(['-c:a', 'aac', '-b:a', '256k'])  # AAC高质量设置
+                elif output_format in ['ogg', 'opus']:
+                    cmd.extend(['-c:a', 'libopus', '-b:a', '192k'])  # Opus高质量设置
+                elif output_format == 'flac':
+                    cmd.extend(['-c:a', 'flac', '-compression_level', '8'])  # FLAC无损压缩
+                else:
+                    cmd.extend(['-c:a', 'copy'])  # 对于其他支持的格式，直接复制音频流
+                
+                # 添加输出路径
+                cmd.append(converted_path)
 
                 try:
                     process = subprocess.Popen(
@@ -2931,23 +3281,31 @@ class AudioVideoDownloadThread(VideoDownloadThread):
                         universal_newlines=True
                     )
 
+                    # 捕获FFmpeg输出，以便更好地调试和显示进度
+                    error_output = []
                     for line in process.stdout:
                         if self.stop_requested:
                             process.terminate()
                             self.download_completed.emit(False, "转换已取消")
                             return
+                        # 收集错误信息
+                        if 'error' in line.lower() or 'failed' in line.lower():
+                            error_output.append(line.strip())
 
                     process.wait()
 
                     if process.returncode == 0:
-                        os.remove(output_path)  # 删除原始文件
-                        output_path = converted_path
-                        self.message_received.emit("音频格式转换完成")
+                        # 转换成功，删除原始文件（如果路径不同）
+                        if output_path != converted_path:
+                            os.remove(output_path)
+                            output_path = converted_path
+                        self.message_received.emit(f"音频处理完成，格式: {output_format}")
                     else:
-                        self.message_received.emit(f"格式转换失败，保留原始文件")
+                        error_msg = "\n".join(error_output) if error_output else "未知错误"
+                        self.message_received.emit(f"格式处理失败，错误: {error_msg}\n保留原始文件")
 
                 except Exception as e:
-                    self.message_received.emit(f"格式转换出错: {str(e)}")
+                    self.message_received.emit(f"格式处理出错: {str(e)}")
 
             self.progress_updated.emit(100)
             self.download_completed.emit(True, f"下载完成，保存至: {output_path}")
@@ -3817,9 +4175,3 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec())    # 确保中文显示正常
-    font = QFont("SimHei")
-    app.setFont(font)
-    app.setStyle("Fusion")
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
