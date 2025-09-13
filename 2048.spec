@@ -3,7 +3,7 @@
 block_cipher = None
 
 
-a = Analysis(['lite_app.py'],
+a = Analysis(['2048.py'],
              pathex=['d:\\Python\\python-wwq_pyqt6_gui-app'],
              binaries=[],
              datas=[],

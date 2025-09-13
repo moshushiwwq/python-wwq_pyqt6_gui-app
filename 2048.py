@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QGridLayout,
                              QLabel, QVBoxLayout, QHBoxLayout, QPushButton,
                              QMessageBox, QFrame)
 from PyQt6.QtGui import QPainter, QColor, QFont, QPen, QBrush
-from PyQt6.QtCore import Qt, QPropertyAnimation, QRect
+from PyQt6.QtCore import Qt, QPropertyAnimation, QRect, QCoreApplication
 
 class Game2048(QMainWindow):
     """
@@ -207,6 +207,8 @@ class Game2048(QMainWindow):
                 # 设置单元格文本
                 if value == 0:
                     cell.setText('')
+                    # 确保空单元格显示正确的背景色
+                    cell.setStyleSheet("background-color: #cdc1b4; color: #776e65; border-radius: 5px;")
                 else:
                     cell.setText(str(value))
                     
@@ -217,6 +219,10 @@ class Game2048(QMainWindow):
                         cell.setStyleSheet(self.get_cell_style(value, 30))
                     else:
                         cell.setStyleSheet(self.get_cell_style(value, 24))
+        
+        # 强制刷新UI，确保立即显示最新状态
+        self.update()
+        QApplication.processEvents()
         
         # 检查游戏状态
         self.check_game_state()
@@ -281,6 +287,8 @@ class Game2048(QMainWindow):
     def move_up(self):
         """向上移动方块"""
         moved = False
+        # 创建一个临时网格来跟踪是否已经合并过
+        merged = [[False for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         # 遍历每一列
         for j in range(self.grid_size):
@@ -297,11 +305,13 @@ class Game2048(QMainWindow):
                         row -= 1
                         moved = True
                     
-                    # 检查是否可以合并
-                    if row > 0 and self.grid[row - 1][j] == self.grid[row][j]:
+                    # 检查是否可以合并，确保每个方块只合并一次
+                    if row > 0 and self.grid[row - 1][j] == self.grid[row][j] and not merged[row - 1][j] and not merged[row][j]:
                         # 合并方块
                         self.grid[row - 1][j] *= 2
                         self.grid[row][j] = 0
+                        # 标记已合并
+                        merged[row - 1][j] = True
                         # 更新分数
                         self.score += self.grid[row - 1][j]
                         moved = True
@@ -311,6 +321,8 @@ class Game2048(QMainWindow):
     def move_down(self):
         """向下移动方块"""
         moved = False
+        # 创建一个临时网格来跟踪是否已经合并过
+        merged = [[False for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         # 遍历每一列
         for j in range(self.grid_size):
@@ -327,11 +339,13 @@ class Game2048(QMainWindow):
                         row += 1
                         moved = True
                     
-                    # 检查是否可以合并
-                    if row < self.grid_size - 1 and self.grid[row + 1][j] == self.grid[row][j]:
+                    # 检查是否可以合并，确保每个方块只合并一次
+                    if row < self.grid_size - 1 and self.grid[row + 1][j] == self.grid[row][j] and not merged[row + 1][j] and not merged[row][j]:
                         # 合并方块
                         self.grid[row + 1][j] *= 2
                         self.grid[row][j] = 0
+                        # 标记已合并
+                        merged[row + 1][j] = True
                         # 更新分数
                         self.score += self.grid[row + 1][j]
                         moved = True
@@ -341,6 +355,8 @@ class Game2048(QMainWindow):
     def move_left(self):
         """向左移动方块"""
         moved = False
+        # 创建一个临时网格来跟踪是否已经合并过
+        merged = [[False for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         # 遍历每一行
         for i in range(self.grid_size):
@@ -357,11 +373,13 @@ class Game2048(QMainWindow):
                         col -= 1
                         moved = True
                     
-                    # 检查是否可以合并
-                    if col > 0 and self.grid[i][col - 1] == self.grid[i][col]:
+                    # 检查是否可以合并，确保每个方块只合并一次
+                    if col > 0 and self.grid[i][col - 1] == self.grid[i][col] and not merged[i][col - 1] and not merged[i][col]:
                         # 合并方块
                         self.grid[i][col - 1] *= 2
                         self.grid[i][col] = 0
+                        # 标记已合并
+                        merged[i][col - 1] = True
                         # 更新分数
                         self.score += self.grid[i][col - 1]
                         moved = True
@@ -371,6 +389,8 @@ class Game2048(QMainWindow):
     def move_right(self):
         """向右移动方块"""
         moved = False
+        # 创建一个临时网格来跟踪是否已经合并过
+        merged = [[False for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         
         # 遍历每一行
         for i in range(self.grid_size):
@@ -387,11 +407,13 @@ class Game2048(QMainWindow):
                         col += 1
                         moved = True
                     
-                    # 检查是否可以合并
-                    if col < self.grid_size - 1 and self.grid[i][col + 1] == self.grid[i][col]:
+                    # 检查是否可以合并，确保每个方块只合并一次
+                    if col < self.grid_size - 1 and self.grid[i][col + 1] == self.grid[i][col] and not merged[i][col + 1] and not merged[i][col]:
                         # 合并方块
                         self.grid[i][col + 1] *= 2
                         self.grid[i][col] = 0
+                        # 标记已合并
+                        merged[i][col + 1] = True
                         # 更新分数
                         self.score += self.grid[i][col + 1]
                         moved = True
