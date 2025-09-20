@@ -152,11 +152,18 @@ class SnakeGame(QMainWindow):
         self.show()
         
     def center_window(self):
-        """将窗口显示在屏幕中央"""
-        screen = QGuiApplication.primaryScreen().geometry()
+        """将窗口显示在屏幕中央偏上位置"""
+        screen = self.screen().geometry()
         size = self.geometry()
+        # 让窗口上移30像素，使视觉效果更好
         self.move((screen.width() - size.width()) // 2, 
-                  (screen.height() - size.height()) // 2)
+                  ((screen.height() - size.height()) // 2) - 30)
+                   
+    def showEvent(self, event):
+        """重写showEvent方法，在窗口显示时自动居中"""
+        super().showEvent(event)
+        # 窗口显示后居中
+        self.center_window()
     
     def reset_game(self):
         """重置游戏状态"""

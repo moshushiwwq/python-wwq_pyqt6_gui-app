@@ -66,7 +66,10 @@ class Game2048(QMainWindow):
         """初始化用户界面"""
         # 设置窗口标题和尺寸
         self.setWindowTitle('2048游戏')
-        self.setGeometry(100, 100, self.width, self.height)
+        self.setGeometry(0, 0, self.width, self.height)
+        
+        # 将窗口显示在屏幕中央
+        self.center_window()
         
         # 创建主窗口部件
         central_widget = QWidget()
@@ -471,6 +474,20 @@ class Game2048(QMainWindow):
         except Exception as e:
             # 如果文件不存在或读取失败，使用默认值
             self.high_score = 0
+    
+    def center_window(self):
+        """将窗口显示在屏幕中央偏上位置"""
+        screen = self.screen().geometry()
+        size = self.geometry()
+        # 让窗口上移30像素，使视觉效果更好
+        self.move((screen.width() - size.width()) // 2, 
+                  ((screen.height() - size.height()) // 2) - 30)
+                   
+    def showEvent(self, event):
+        """重写showEvent方法，在窗口显示时自动居中"""
+        super().showEvent(event)
+        # 窗口显示后居中
+        self.center_window()
     
     def check_game_state(self):
         """检查游戏状态（胜利或失败）"""

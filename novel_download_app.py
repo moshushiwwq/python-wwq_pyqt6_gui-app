@@ -159,15 +159,28 @@ class NovelDownloadWindow(QWidget) :
         self.setWindowTitle("小说下载器")
         self.setMinimumSize(600 , 600)
         self.init_ui()
-        # 设置窗口位置在上一个窗口的左上角
-        if parent and parent.isVisible() :
-            parent_pos = parent.pos()
-            self.move(parent_pos)
+        # 如果有父窗口且父窗口可见，窗口将显示在屏幕中央
+        # 而不是跟随父窗口位置
+        self.center_window()
         # 加载保存的设置
         self.load_settings()
         self.download_thread = None
         # 美化UI
         self.setup_styles()
+        
+    def center_window(self):
+        """将窗口显示在屏幕中央偏上位置"""
+        screen = self.screen().geometry()
+        size = self.geometry()
+        # 让窗口上移30像素，使视觉效果更好
+        self.move((screen.width() - size.width()) // 2, 
+                  ((screen.height() - size.height()) // 2) - 30)
+                   
+    def showEvent(self, event):
+        """重写showEvent方法，在窗口显示时自动居中"""
+        super().showEvent(event)
+        # 窗口显示后居中
+        self.center_window()
     """设置美化的UI样式，使用Qt样式表设置各控件的外观"""
     def setup_styles(self) :
        # 设置应用整体样式
