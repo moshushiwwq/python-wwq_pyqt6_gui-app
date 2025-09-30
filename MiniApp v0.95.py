@@ -42,19 +42,41 @@ print('已导入: QtCore组件和WebEngine相关组件')
 font = QFont()
 font.setFamily("SimHei")
 
+# 获取配置文件目录
+def get_config_dir():
+    """获取配置文件保存目录，确保在exe所在文件夹的infor目录下"""
+    # 确定应用程序所在目录
+    if getattr(sys, 'frozen', False):
+        # 运行在打包后的exe中
+        app_dir = os.path.dirname(sys.executable)
+    else:
+        # 运行在开发环境中
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 创建infor目录
+    config_dir = os.path.join(app_dir, 'infor')
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir)
+    
+    return config_dir
+
+# 定义配置文件路径
+CONFIG_DIR = get_config_dir()
+USR_INFO_FILE = os.path.join(CONFIG_DIR, 'usr_info.pickle')
+
 # 哈希加密函数
 def hash_string(string):
     return hashlib.sha256(string.encode()).hexdigest()
 
 # 保存用户信息
 def save_users_info(users_info):
-    with open('usr_info.pickle', 'wb') as usr_file:
+    with open(USR_INFO_FILE, 'wb') as usr_file:
         pickle.dump(users_info, usr_file)
 
 # 加载用户信息
 def load_users_info():
     try:
-        with open('usr_info.pickle', 'rb') as usr_file:
+        with open(USR_INFO_FILE, 'rb') as usr_file:
             return pickle.load(usr_file)
     except FileNotFoundError:
         return {}
