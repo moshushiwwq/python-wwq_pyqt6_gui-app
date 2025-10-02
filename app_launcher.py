@@ -21,6 +21,9 @@ import json
 import threading
 import webbrowser
 import logging
+import uuid
+import subprocess
+import shutil
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -31,10 +34,12 @@ from PyQt6.QtWidgets import (
     QGridLayout, QProgressBar, QTextEdit,
     QFileDialog, QLineEdit, QDialog, QGroupBox,
     QFormLayout, QSpinBox, QSizePolicy, QFrame, QComboBox,
-    QToolButton, QSystemTrayIcon, QStyle, QMenu, QScrollArea
-    
+    QToolButton, QSystemTrayIcon, QStyle, QMenu, QScrollArea,
+    QTreeView, QCheckBox
 )
-from PyQt6.QtGui import QAction
+# 在PyQt6中，QStandardItem和QStandardItemModel位于QtGui模块
+from PyQt6.QtGui import QStandardItem, QStandardItemModel
+from PyQt6.QtGui import QAction, QTextCursor
 from PyQt6.QtGui import QFont, QPainter, QPen, QBrush, QColor , QIcon , QPixmap, QGuiApplication, QRadialGradient, QPalette, QTextDocument
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, pyqtSignal,QSettings, QRectF, QPointF
 
@@ -43,6 +48,225 @@ import os
 import sys
 import logging
 import pickle
+
+# ===== 加密工具和加密日志处理器 =====
+import base64
+import os
+import logging.handlers  # 提前导入logging.handlers模块
+import fnmatch
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
+
+class CryptoUtils:
+    """
+    加密工具类
+    提供AES加密和解密功能，用于保护日志和配置文件
+    """
+    def __init__(self, key=None):
+        """
+        初始化加密工具
+        
+        Args:
+            key: 加密密钥，如果不提供则使用默认密钥
+        """
+        # 如果未提供密钥，使用默认密钥
+        if key is None:
+            # 使用应用程序特定的默认密钥（实际应用中应考虑更安全的密钥管理方式）
+            key = "PythonBoxAppSecretKey!"  # 实际应用中应使用更安全的密钥生成方式
+        
+        # 确保密钥长度为16、24或32字节（AES要求）
+        if len(key) < 16:
+            key = key.ljust(16, '\0')
+        elif len(key) < 24:
+            key = key.ljust(24, '\0')
+        else:
+            key = key[:32]  # 截取前32字节
+        
+        self.key = key.encode('utf-8')
+        self.backend = default_backend()
+        
+    def encrypt(self, data):
+        """
+        加密数据
+        
+        Args:
+            data: 要加密的数据（字符串）
+        
+        Returns:
+            加密后的base64编码字符串
+        """
+        # 转换数据为字节
+        if isinstance(data, str):
+            data = data.encode('utf-8')
+        
+        # 生成随机IV
+        iv = os.urandom(16)
+        
+        # 创建填充器
+        padder = padding.PKCS7(algorithms.AES.block_size).padder()
+        padded_data = padder.update(data) + padder.finalize()
+        
+        # 创建加密器和解密器
+        cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=self.backend)
+        encryptor = cipher.encryptor()
+        ciphertext = encryptor.update(padded_data) + encryptor.finalize()
+        
+        # 组合IV和密文并进行base64编码
+        result = base64.b64encode(iv + ciphertext)
+        return result.decode('utf-8')
+        
+    def decrypt(self, encrypted_data):
+        """
+        解密数据
+        
+        Args:
+            encrypted_data: 加密后的base64编码字符串
+        
+        Returns:
+            解密后的原始字符串
+        """
+        # 解码base64
+        encrypted_bytes = base64.b64decode(encrypted_data.encode('utf-8'))
+        
+        # 提取IV和密文
+        iv = encrypted_bytes[:16]
+        ciphertext = encrypted_bytes[16:]
+        
+        # 创建加密器和解密器
+        cipher = Cipher(algorithms.AES(self.key), modes.CBC(iv), backend=self.backend)
+        decryptor = cipher.decryptor()
+        padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+        
+        # 去除填充
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        data = unpadder.update(padded_data) + unpadder.finalize()
+        
+        # 转换为字符串
+        return data.decode('utf-8')
+
+# 创建全局加密工具实例
+crypto_utils = CryptoUtils()
+
+class EncryptedLogHandler(logging.FileHandler):
+    """
+    加密日志处理器
+    继承自FileHandler，在写入日志时自动加密
+    """
+    def __init__(self, filename, mode='a', encoding='utf-8', delay=False):
+        """
+        初始化加密日志处理器
+        
+        Args:
+            filename: 日志文件路径
+            mode: 文件打开模式
+            encoding: 文件编码
+            delay: 是否延迟创建文件
+        """
+        # 调用父类初始化
+        super().__init__(filename, mode, encoding, delay)
+        
+    def emit(self, record):
+        """
+        重写emit方法，在写入前加密日志记录
+        
+        Args:
+            record: 日志记录对象
+        """
+        try:
+            # 格式化日志记录
+            msg = self.format(record)
+            
+            # 加密日志消息
+            encrypted_msg = crypto_utils.encrypt(msg)
+            
+            # 将加密后的消息写入文件，确保使用b模式
+            self.stream.write(encrypted_msg + '\n')
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+class EncryptedRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """
+    加密的轮转日志处理器
+    支持日志文件大小轮转，并在写入时自动加密
+    """
+    def __init__(self, filename, maxBytes=0, backupCount=0, encoding=None, delay=False):
+        """
+        初始化加密的轮转日志处理器
+        
+        Args:
+            filename: 日志文件路径
+            maxBytes: 单个日志文件最大字节数
+            backupCount: 保留的备份文件数量
+            encoding: 文件编码
+            delay: 是否延迟创建文件
+        """
+        # 确保导入RotatingFileHandler
+        import logging.handlers
+        # 调用父类初始化
+        super().__init__(filename, maxBytes, backupCount, encoding, delay)
+    
+    def emit(self, record):
+        """
+        重写emit方法，在写入前加密日志记录
+        
+        Args:
+            record: 日志记录对象
+        """
+        try:
+            # 格式化日志记录
+            msg = self.format(record)
+            
+            # 加密日志消息
+            encrypted_msg = crypto_utils.encrypt(msg)
+            
+            # 将加密后的消息写入文件
+            self.stream.write(encrypted_msg + '\n')
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+# 添加一个用于解密读取日志文件的函数
+def read_encrypted_logs(log_file_path):
+    """
+    读取并解密日志文件
+    
+    Args:
+        log_file_path: 日志文件路径
+    
+    Returns:
+        解密后的日志内容字符串
+    """
+    if not os.path.exists(log_file_path):
+        return "日志文件不存在"
+    
+    try:
+        decrypted_logs = []
+        # 尝试使用不同的编码方式读取日志文件
+        encodings = ['utf-8', 'gbk', 'latin-1']
+        for encoding in encodings:
+            try:
+                with open(log_file_path, 'r', encoding=encoding) as f:
+                    encrypted_lines = f.readlines()
+                break
+            except UnicodeDecodeError:
+                continue
+        
+        # 解密每一行日志
+        for line in encrypted_lines:
+            line = line.strip()
+            if line:
+                try:
+                    decrypted_line = crypto_utils.decrypt(line)
+                    decrypted_logs.append(decrypted_line)
+                except Exception:
+                    # 如果解密失败，保留原始内容
+                    decrypted_logs.append(f"[解密失败] {line}")
+        
+        return '\n'.join(decrypted_logs)
+    except Exception as e:
+        return f"读取日志文件失败: {str(e)}"
 
 # 获取配置文件保存目录
 def get_config_dir():
@@ -62,7 +286,7 @@ def get_config_dir():
             os.makedirs(config_dir)
         except Exception as e:
             # 如果创建失败，使用临时目录
-            config_dir = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', 'C:\Temp')), 'app_infor')
+            config_dir = os.path.join(os.environ.get('TEMP', os.environ.get('TMP', r'C:\Temp')), 'app_infor')
             if not os.path.exists(config_dir):
                 os.makedirs(config_dir)
     
@@ -72,22 +296,30 @@ def get_config_dir():
 CONFIG_DIR = get_config_dir()
 
 # 配置文件路径
-APP_LOG_FILE = os.path.join(CONFIG_DIR, 'app_log.txt')
+APP_LOG_FILE = os.path.join(CONFIG_DIR, 'app_log')  # 不使用.txt后缀
 APP_SETTINGS_FILE = os.path.join(CONFIG_DIR, 'app_settings.pkl')
-GAME2048_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, '2048_high_score.txt')
+GAME2048_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, '2048_high_score')  # 不使用.txt后缀
 SNAKE_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, 'snake_high_score.pickle')
 DINO_GAME_SCORES_FILE = os.path.join(CONFIG_DIR, 'dino_game_scores.pkl')
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(APP_LOG_FILE),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.propagate = False  # 阻止日志消息传播到父日志记录器
+
+# 清除已有的处理器
+for handler in logger.handlers[:]:
+    logger.removeHandler(handler)
+
+# 添加加密文件处理器和控制台处理器
+file_handler = EncryptedLogHandler(APP_LOG_FILE, encoding='utf-8')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# 添加控制台处理器
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
 
 # ===== 版本历史信息 =====
 VERSION_HISTORY = [
@@ -131,9 +363,801 @@ VERSION_HISTORY = [
     }
 ]
 
-# =======================================================
-# 小恐龙游戏实现
-# =======================================================
+# ===== 应用程序启动器主窗口类 =====
+class AppLauncher(QMainWindow):
+    """
+    应用程序启动器主窗口类
+    提供界面让用户选择要运行的应用程序
+    """
+    def __init__(self):
+        super().__init__()
+        # 设置中文字体支持
+        self.font = QFont()
+        self.font.setFamily("SimHei")
+        
+        # 存储子窗口的引用，用于管理
+        self.child_windows = []
+        
+        # 状态栏显示控制
+        self.status_bar_visible = True
+        
+        # 系统托盘图标
+        self.tray_icon = None
+        
+        # 初始化UI
+        self.init_ui()
+        
+        # 创建进度条相关属性
+        self.progress_window = None
+        self.progress_value = 0
+        
+        # 初始化设置和日志功能
+        self.settings = self.load_settings()
+        self.log_history = []
+        self.log_file_path = APP_LOG_FILE
+        
+        # 窗口居中显示
+        self.center_window()
+        
+    def init_ui(self):
+        """初始化用户界面"""
+        # 设置窗口标题和尺寸
+        self.setWindowTitle('Python_box_designed_by_wwq')
+        self.setGeometry(100, 100, 500, 500)
+        
+        # 创建主窗口部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 创建垂直布局
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+        
+        # 创建标题标签
+        title_label = QLabel('Python_box')
+        title_label.setFont(QFont("SimHei", 24, QFont.Weight.Bold))
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(title_label)
+        
+        # 创建游戏按钮组
+        games_group = QGroupBox("游戏")
+        games_layout = QVBoxLayout()
+        games_group.setLayout(games_layout)
+        games_layout.setSpacing(10)
+        
+        # 创建2048游戏按钮
+        self.game2048_button = QPushButton('2048游戏')
+        self.game2048_button.setFont(self.font)
+        self.game2048_button.setStyleSheet("background-color: #4CAF50; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+        self.game2048_button.clicked.connect(self.run_game2048)
+        games_layout.addWidget(self.game2048_button)
+        
+        # 创建贪吃蛇游戏按钮
+        self.snake_button = QPushButton('贪吃蛇游戏')
+        self.snake_button.setFont(self.font)
+        self.snake_button.setStyleSheet("background-color: #2196F3; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+        self.snake_button.clicked.connect(self.run_snake)
+        games_layout.addWidget(self.snake_button)
+        
+        # 创建小恐龙游戏按钮
+        if DinoGame:
+            self.dino_button = QPushButton('小恐龙游戏')
+            self.dino_button.setFont(self.font)
+            self.dino_button.setStyleSheet("background-color: #9C27B0; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+            self.dino_button.clicked.connect(self.run_dino_game)
+            games_layout.addWidget(self.dino_button)
+        
+        # 创建俄罗斯方块游戏按钮
+        if TetrisGame:
+            self.tetris_button = QPushButton('俄罗斯方块')
+            self.tetris_button.setFont(self.font)
+            self.tetris_button.setStyleSheet("background-color: #F44336; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+            self.tetris_button.clicked.connect(self.run_tetris_game)
+            games_layout.addWidget(self.tetris_button)
+        
+        main_layout.addWidget(games_group)
+        
+        # 创建工具按钮组
+        tools_group = QGroupBox("工具")
+        tools_layout = QVBoxLayout()
+        tools_group.setLayout(tools_layout)
+        tools_layout.setSpacing(10)
+        
+        # 创建小说下载器按钮
+        self.novel_downloader_button = QPushButton('小说下载器')
+        self.novel_downloader_button.setFont(self.font)
+        self.novel_downloader_button.setStyleSheet("background-color: #FF9800; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+        self.novel_downloader_button.clicked.connect(self.run_novel_downloader)
+        tools_layout.addWidget(self.novel_downloader_button)
+        
+        # 创建视频下载器按钮
+        self.video_downloader_button = QPushButton('视频下载器')
+        self.video_downloader_button.setFont(self.font)
+        self.video_downloader_button.setStyleSheet("background-color: #9C27B0; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+        self.video_downloader_button.clicked.connect(self.run_video_downloader)
+        tools_layout.addWidget(self.video_downloader_button)
+        
+        # 创建音频格式转换工具按钮
+        self.audio_converter_button = QPushButton('音频格式转换工具')
+        self.audio_converter_button.setFont(self.font)
+        self.audio_converter_button.setStyleSheet("background-color: #009688; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+        self.audio_converter_button.clicked.connect(self.run_audio_converter)
+        tools_layout.addWidget(self.audio_converter_button)
+        
+        main_layout.addWidget(tools_group)
+        
+        # 创建设置和日志按钮组
+        settings_group = QGroupBox("设置与帮助")
+        settings_layout = QHBoxLayout()
+        settings_group.setLayout(settings_layout)
+        
+        # 创建设置按钮
+        self.settings_button = QPushButton('设置')
+        self.settings_button.setFont(self.font)
+        self.settings_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.settings_button.clicked.connect(self.show_settings)
+        settings_layout.addWidget(self.settings_button)
+        
+        # 创建日志按钮
+        self.log_button = QPushButton('查看日志')
+        self.log_button.setFont(self.font)
+        self.log_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.log_button.clicked.connect(self.show_log)
+        settings_layout.addWidget(self.log_button)
+        
+        # 创建版本历史按钮
+        self.version_button = QPushButton('版本历史')
+        self.version_button.setFont(self.font)
+        self.version_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.version_button.clicked.connect(self.show_version_history)
+        settings_layout.addWidget(self.version_button)
+        
+        main_layout.addWidget(settings_group)
+        
+        # 创建状态栏
+        self.statusBar().showMessage("欢迎使用Python_box")
+        
+        # 创建系统托盘图标
+        self.create_tray_icon()
+        
+        # 连接窗口关闭事件
+        self.closeEvent = self.on_close_event
+        
+    def center_window(self):
+        """将窗口显示在屏幕中央偏上位置"""
+        screen = self.screen().geometry()
+        size = self.geometry()
+        # 让窗口上移30像素，使视觉效果更好
+        self.move((screen.width() - size.width()) // 2, 
+                  ((screen.height() - size.height()) // 2) - 30)
+    
+    def create_tray_icon(self):
+        """
+        创建系统托盘图标
+        设置托盘图标、菜单和相关行为
+        """
+        # 检查系统是否支持系统托盘
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        
+        # 创建系统托盘图标
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # 使用内置图标
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
+        self.tray_icon.setIcon(icon)
+        self.tray_icon.setToolTip("Python_box")
+        
+        # 创建托盘菜单
+        tray_menu = QMenu(self)
+        
+        # 显示主窗口动作
+        show_action = QAction("显示主窗口", self)
+        show_action.triggered.connect(self.show)
+        tray_menu.addAction(show_action)
+        
+        # 显示设置对话框动作
+        settings_action = QAction("设置", self)
+        settings_action.triggered.connect(self.show_settings)
+        tray_menu.addAction(settings_action)
+        
+        # 显示日志查看器动作
+        log_action = QAction("查看日志", self)
+        log_action.triggered.connect(self.show_log)
+        tray_menu.addAction(log_action)
+        
+        # 显示版本历史动作
+        version_action = QAction("版本历史", self)
+        version_action.triggered.connect(self.show_version_history)
+        tray_menu.addAction(version_action)
+        
+        # 退出动作
+        exit_action = QAction("退出", self)
+        exit_action.triggered.connect(QApplication.instance().quit)
+        tray_menu.addAction(exit_action)
+        
+        # 设置托盘菜单
+        self.tray_icon.setContextMenu(tray_menu)
+        
+        # 连接托盘图标激活信号
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        
+        # 显示托盘图标
+        self.tray_icon.show()
+    
+    def on_tray_icon_activated(self, reason):
+        """
+        处理托盘图标激活事件
+        当双击托盘图标时显示主窗口
+        """
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.show()
+
+    def changeEvent(self, event):
+        """
+        处理窗口状态变化事件
+        根据设置决定窗口最小化时的行为
+        """
+        if event.type() == event.Type.WindowStateChange:
+            # 检查窗口是否最小化
+            if self.isMinimized():
+                # 使用AppLauncher类中已经加载的settings变量
+                # 检查设置是否允许最小化到托盘
+                minimize_to_tray = self.settings.get('minimize_to_tray', True)
+                
+                if minimize_to_tray:
+                    # 如果设置允许最小化到托盘且系统托盘已启用
+                    if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
+                        self.hide()
+                        # 显示通知
+                        self.tray_icon.showMessage(
+                            "应用程序最小化",
+                            "应用程序已最小化到系统托盘，双击托盘图标可恢复显示。",
+                            QSystemTrayIcon.MessageIcon.Information,
+                            3000
+                        )
+                        # 记录操作日志
+                        logger.info("应用程序最小化到系统托盘")
+                else:
+                    # 如果设置不允许最小化到托盘，直接关闭程序
+                    logger.info("应用程序根据设置直接关闭")
+                    self.close()
+        # 调用父类的changeEvent以确保正常的事件处理流程
+        super().changeEvent(event)
+
+    def on_close_event(self, event):
+        """
+        处理窗口关闭事件
+        根据设置决定点击关闭按钮时的行为
+        """
+        # 检查设置是否允许最小化到托盘
+        minimize_to_tray = self.settings.get('minimize_to_tray', True)
+        
+        if minimize_to_tray:
+            # 如果设置允许最小化到托盘且系统托盘已启用
+            if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
+                # 隐藏主窗口而不是关闭
+                self.hide()
+                # 显示通知
+                self.tray_icon.showMessage(
+                    "应用程序最小化",
+                    "应用程序已最小化到系统托盘，双击托盘图标可恢复显示。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3000
+                )
+                # 记录操作日志
+                logger.info("应用程序最小化到系统托盘")
+                # 忽略关闭事件
+                event.ignore()
+                return
+        
+        # 如果设置不允许最小化到托盘或系统托盘未启用，正常关闭
+        logger.info("应用程序正常关闭")
+        event.accept()
+    
+    def log_action(self, message, log_type="info"):
+        """
+        记录操作日志
+        
+        参数:
+            message: 日志消息内容
+            log_type: 日志类型，默认为"info"，可选值包括"info"、"error"等
+        """
+        # 记录到日志文件
+        if log_type.lower() == "error":
+            logger.error(message)
+        else:
+            logger.info(message)
+        
+        # 将日志添加到历史记录中
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] [{log_type.upper()}] {message}"
+        
+        # 保存到日志历史列表
+        self.log_history.append(log_entry)
+        
+        # 限制日志历史记录的数量，防止内存占用过多
+        if len(self.log_history) > 1000:
+            self.log_history = self.log_history[-1000:]
+    
+    def create_progress_window(self, title):
+        """创建并显示进度条窗口"""
+        # 如果进度窗口已存在，先关闭
+        if self.progress_window:
+            self.progress_window.close()
+            self.progress_window = None
+            
+        # 创建新的进度窗口
+        self.progress_window = QDialog(self)
+        self.progress_window.setWindowTitle(title)
+        self.progress_window.setGeometry(100, 100, 300, 100)
+        self.progress_window.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        
+        # 创建布局
+        layout = QVBoxLayout(self.progress_window)
+        
+        # 创建进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("加载中: %p%")
+        layout.addWidget(self.progress_bar)
+        
+        # 居中显示进度窗口
+        self.progress_window.move(
+            (self.screen().geometry().width() - self.progress_window.width()) // 2,
+            (self.screen().geometry().height() - self.progress_window.height()) // 2
+        )
+        
+        # 显示进度窗口
+        self.progress_window.show()
+        
+        # 重置进度值
+        self.progress_value = 0
+        
+    def update_progress(self):
+        """更新进度条显示"""
+        if not self.progress_window or not hasattr(self, 'progress_bar'):
+            return
+        
+        # 增加进度值
+        self.progress_value += 5
+        if self.progress_value > 95:
+            self.progress_value = 95  # 保留最后5%用于实际加载完成
+        
+        self.progress_bar.setValue(self.progress_value)
+        
+        # 继续更新进度条
+        QTimer.singleShot(50, self.update_progress)
+        
+    def finalize_progress(self):
+        """完成进度显示并关闭进度窗口"""
+        if self.progress_window and hasattr(self, 'progress_bar'):
+            # 设置进度为100%
+            self.progress_bar.setValue(100)
+            self.progress_bar.setFormat("加载完成!")
+            
+            # 延迟关闭进度窗口
+            QTimer.singleShot(200, self.progress_window.close)
+    
+    def run_game2048(self):
+        """运行2048游戏，保留主窗口并显示进度条"""
+        self._button_clicked_feedback(self.game2048_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动2048游戏")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建2048游戏窗口，保留主窗口可见
+            self.game2048_window = Game2048()
+            
+            # 记录日志
+            logger.info("用户启动了2048游戏")
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示游戏窗口
+            self.game2048_window.show()
+            # 显示后再次调用居中方法，确保窗口正确居中
+            self.game2048_window.center_window()
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', f'无法运行2048游戏: {str(e)}')
+            self._reset_button_style(self.game2048_button, "#4CAF50")
+        
+    def run_snake(self):
+        """运行贪吃蛇游戏，保留主窗口并显示进度条"""
+        self._button_clicked_feedback(self.snake_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动贪吃蛇游戏")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建贪吃蛇游戏窗口，保留主窗口可见
+            self.snake_window = SnakeGame()
+            
+            # 记录日志
+            logger.info("用户启动了贪吃蛇游戏")
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示游戏窗口
+            self.snake_window.show()
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', f'无法运行贪吃蛇游戏: {str(e)}')
+            self._reset_button_style(self.snake_button, "#2196F3")
+        
+    def run_novel_downloader(self):
+        """运行小说下载器，保留主窗口并显示进度条"""
+        self._button_clicked_feedback(self.novel_downloader_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动小说下载器")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建小说下载器窗口，保留主窗口可见
+            self.novel_window = NovelDownloadWindow()
+            self.child_windows.append(self.novel_window)
+            
+            # 设置窗口关闭事件
+            self.novel_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示小说下载器窗口
+            self.novel_window.show()
+            
+            # 记录操作日志
+            self.log_action("启动小说下载器")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行小说下载器: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            self._reset_button_style(self.novel_downloader_button, "#FF9800")
+            # 记录错误日志
+            self.log_action(error_msg, "error")
+        
+    def run_video_downloader(self):
+        """运行视频下载器，保留主窗口并显示进度条"""
+        self._button_clicked_feedback(self.video_downloader_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动视频下载器")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建视频下载器窗口，保留主窗口可见
+            self.video_window = VideoDownloaderWindow()
+            self.child_windows.append(self.video_window)
+            
+            # 设置窗口关闭事件
+            self.video_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示视频下载器窗口
+            self.video_window.show()
+            
+            # 记录操作日志
+            self.log_action("启动视频下载器")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行视频下载器: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            self._reset_button_style(self.video_downloader_button, "#9C27B0")
+            # 记录错误日志
+            self.log_action(error_msg, "error")
+        
+    def run_dino_game(self):
+        """运行小恐龙游戏，保留主窗口并显示进度条"""
+        if not DinoGame:
+            QMessageBox.warning(self, "警告", "小恐龙游戏模块不可用，请确保dino_game.py文件存在且可导入。")
+            return
+        
+        self._button_clicked_feedback(self.dino_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动小恐龙游戏")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建小恐龙游戏窗口，保留主窗口可见
+            self.dino_window = DinoGame()
+            self.child_windows.append(self.dino_window)
+            
+            # 设置窗口关闭事件（不传递已销毁的窗口对象）
+            self.dino_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示游戏窗口
+            self.dino_window.show()
+            
+            # 确保窗口获得焦点
+            self.dino_window.activateWindow()
+            self.dino_window.setFocus()
+            self.dino_window.grabKeyboard()
+            
+            # 记录操作日志
+            self.log_action("启动小恐龙游戏")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行小恐龙游戏: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            self._reset_button_style(self.dino_button, "#9C27B0")
+            # 记录错误日志
+            self.log_action(error_msg, "error")
+        
+    def run_tetris_game(self):
+        """运行俄罗斯方块游戏，保留主窗口并显示进度条"""
+        if not TetrisGame:
+            QMessageBox.warning(self, "警告", "俄罗斯方块游戏模块不可用，请确保tetris_game.py文件存在且可导入。")
+            return
+        
+        self._button_clicked_feedback(self.tetris_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动俄罗斯方块游戏")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建俄罗斯方块游戏窗口，保留主窗口可见
+            self.tetris_window = TetrisGame()
+            self.child_windows.append(self.tetris_window)
+            
+            # 设置窗口关闭事件（不传递已销毁的窗口对象）
+            self.tetris_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示游戏窗口
+            self.tetris_window.show()
+            
+            # 确保窗口获得焦点
+            self.tetris_window.activateWindow()
+            self.tetris_window.setFocus()
+            self.tetris_window.grabKeyboard()
+            
+            # 记录操作日志
+            self.log_action("启动俄罗斯方块游戏")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行俄罗斯方块游戏: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            self._reset_button_style(self.tetris_button, "#F44336")
+            # 记录错误日志
+            self.log_action(error_msg, "error")
+    
+    def _button_clicked_feedback(self, button):
+        """按钮点击反馈效果"""
+        original_style = button.styleSheet()
+        # 临时改变按钮样式
+        button.setStyleSheet(original_style + " background-color: #777777;")
+        # 立即重绘
+        button.repaint()
+        # 延迟一小段时间后恢复原样式
+        QTimer.singleShot(150, lambda: self._reset_button_style(button, self._get_original_color(original_style)))
+    
+    def _reset_button_style(self, button, color):
+        """重置按钮样式"""
+        button.setStyleSheet(f"background-color: {color}; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
+    
+    def _get_original_color(self, style):
+        """从样式表中提取原始颜色"""
+        if "#4CAF50" in style:
+            return "#4CAF50"
+        elif "#2196F3" in style:
+            return "#2196F3"
+        elif "#FF9800" in style:
+            return "#FF9800"
+        elif "#9C27B0" in style:
+            return "#9C27B0"  # 小恐龙游戏按钮颜色
+        elif "#F44336" in style:
+            return "#F44336"  # 俄罗斯方块按钮颜色
+        elif "#607D8B" in style:
+            return "#607D8B"  # 设置和帮助按钮颜色
+        else:
+            return "#4CAF50"  # 默认颜色
+    
+    def load_settings(self):
+        """
+        加载应用程序设置
+        确保从infor文件夹中加载配置文件
+        返回: 包含设置的字典
+        """
+        try:
+            # 确保infor文件夹存在
+            if not os.path.exists(CONFIG_DIR):
+                try:
+                    os.makedirs(CONFIG_DIR)
+                    logging.info(f"创建配置目录: {CONFIG_DIR}")
+                except Exception as e:
+                    logging.error(f"创建配置目录失败: {str(e)}")
+            
+            # 尝试加载设置
+            if os.path.exists(APP_SETTINGS_FILE):
+                try:
+                    with open(APP_SETTINGS_FILE, 'rb') as f:
+                        settings = pickle.load(f)
+                    logging.info("成功加载应用设置")
+                    return settings
+                except Exception as e:
+                    logging.error(f"加载设置文件失败: {str(e)}")
+                    # 出错时返回默认设置
+                    default_settings = {
+                        'show_welcome': True,
+                        'auto_save': True,
+                        'minimize_to_tray': True,  # 默认允许最小化到托盘
+                        'log_level': 'INFO'
+                    }
+                    return default_settings
+            else:
+                # 如果设置文件不存在，返回默认设置
+                default_settings = {
+                    'show_welcome': True,
+                    'auto_save': True,
+                    'minimize_to_tray': True,  # 默认允许最小化到托盘
+                    'log_level': 'INFO'
+                }
+                logging.info("设置文件不存在，使用默认设置")
+                return default_settings
+        except Exception as e:
+            logging.error(f"加载设置时出错: {str(e)}")
+            # 出错时返回默认设置
+            return {
+                'show_welcome': True,
+                'auto_save': True,
+                'minimize_to_tray': True,  # 默认允许最小化到托盘
+                'log_level': 'INFO'
+            }
+    
+    def show_settings(self):
+        """显示应用设置对话框"""
+        try:
+            # 显示设置对话框
+            settings_dialog = SettingsDialog(self)
+            result = settings_dialog.exec()
+            # 记录操作日志
+            logger.info("用户打开了设置对话框")
+            
+            # 如果设置对话框返回接受（用户点击了保存），重新加载设置
+            if result == QDialog.DialogCode.Accepted:
+                self.settings = self.load_settings()
+                logger.info("成功重新加载应用设置")
+        except Exception as e:
+            print(f"显示设置对话框失败: {e}")
+            QMessageBox.critical(self, "错误", f"显示设置对话框失败: {str(e)}")
+            # 记录错误日志
+            logger.error(f"显示设置对话框失败: {str(e)}")
+    
+    def show_log(self):
+        """显示日志查看器对话框"""
+        try:
+            # 显示日志查看器
+            log_viewer = LogViewerDialog(self)
+            log_viewer.exec()
+            # 记录操作日志
+            logger.info("用户打开了日志查看器")
+        except Exception as e:
+            print(f"显示日志查看器失败: {e}")
+            QMessageBox.critical(self, "错误", f"显示日志查看器失败: {str(e)}")
+            # 记录错误日志
+            logger.error(f"显示日志查看器失败: {str(e)}")
+    
+    def show_version_history(self):
+        """显示版本历史对话框"""
+        try:
+            # 显示版本历史对话框
+            version_dialog = VersionHistoryDialog(self)
+            version_dialog.exec()
+            # 记录操作日志
+            logger.info("用户打开了版本历史对话框")
+        except Exception as e:
+            print(f"显示版本历史对话框失败: {e}")
+            QMessageBox.critical(self, "错误", f"显示版本历史对话框失败: {str(e)}")
+            # 记录错误日志
+            logger.error(f"显示版本历史对话框失败: {str(e)}")
+    
+    def _show_launcher(self):
+        """重新显示启动器窗口"""
+        # 确保所有子窗口都已关闭
+        QTimer.singleShot(100, self.show)
+        
+    def _on_child_window_close(self, event):
+        """处理子窗口关闭事件的回调函数（用于QCloseEvent事件）"""
+        # 确保事件被接受，窗口可以正常关闭
+        event.accept()
+        # 直接显示启动器窗口
+        self._show_launcher()
+        
+    def _on_child_window_close_without_event(self):
+        """处理窗口销毁信号的回调函数（用于destroyed信号）"""
+        # 直接显示启动器窗口
+        self._show_launcher()
+
+
+# ===== 自定义对话框类 =====            
+class CustomDialog(QDialog):
+    """自定义对话框类，用于显示各种消息提示"""
+    def __init__(self, message, title="提示", button_text="确定", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(300, 150)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        
+        # 创建布局
+        layout = QVBoxLayout()
+        
+        # 添加消息标签
+        self.message_label = QLabel(message)
+        self.message_label.setWordWrap(True)
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.message_label)
+        
+        # 添加按钮
+        button_layout = QHBoxLayout()
+        self.ok_button = QPushButton(button_text)
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(self.ok_button)
+        layout.addLayout(button_layout)
+        
+        # 设置样式
+        self.setStyleSheet("""
+            QDialog {
+                background-color: white;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #333;
+                font-size: 14px;
+                padding: 10px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        
+        self.setLayout(layout)
+
+
+# ===== 小恐龙游戏实现 =====
 class DinoGame(QWidget):
     """
     小恐龙游戏主窗口类
@@ -974,9 +1998,8 @@ class DinoGameCanvas(QWidget):
                 
         super().resizeEvent(event)
 
-# =======================================================
-# 俄罗斯方块游戏实现
-# =======================================================
+
+# ===== 俄罗斯方块游戏实现 =====
 class TetrisGame(QWidget):
     """
     俄罗斯方块游戏主窗口类
@@ -1711,723 +2734,6 @@ class TetrisGameCanvas(QWidget):
         
         super().resizeEvent(event)
 
-class AppLauncher(QMainWindow):
-    """
-    应用程序启动器主窗口类
-    提供界面让用户选择要运行的应用程序
-    """
-    def __init__(self):
-        super().__init__()
-        # 设置中文字体支持
-        self.font = QFont()
-        self.font.setFamily("SimHei")
-        
-        # 存储子窗口的引用，用于管理
-        self.child_windows = []
-        
-        # 状态栏显示控制
-        self.status_bar_visible = True
-        
-        # 系统托盘图标
-        self.tray_icon = None
-        
-        # 初始化UI
-        self.init_ui()
-        
-        # 创建进度条相关属性
-        self.progress_window = None
-        self.progress_value = 0
-        
-        # 初始化设置和日志功能
-        self.settings = self.load_settings()
-        self.log_history = []
-        self.log_file_path = APP_LOG_FILE
-        
-        # 窗口居中显示
-        self.center_window()
-        
-    def init_ui(self):
-        """初始化用户界面"""
-        # 设置窗口标题和尺寸
-        self.setWindowTitle('Python_box_designed_by_wwq')
-        self.setGeometry(100, 100, 500, 500)
-        
-        # 创建主窗口部件
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # 创建垂直布局
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
-        
-        # 创建标题标签
-        title_label = QLabel('Python_box')
-        title_label.setFont(QFont("SimHei", 24, QFont.Weight.Bold))
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(title_label)
-        
-        # 创建游戏按钮组
-        games_group = QGroupBox("游戏")
-        games_layout = QVBoxLayout()
-        games_group.setLayout(games_layout)
-        games_layout.setSpacing(10)
-        
-        # 创建2048游戏按钮
-        self.game2048_button = QPushButton('2048游戏')
-        self.game2048_button.setFont(self.font)
-        self.game2048_button.setStyleSheet("background-color: #4CAF50; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.game2048_button.clicked.connect(self.run_game2048)
-        games_layout.addWidget(self.game2048_button)
-        
-        # 创建贪吃蛇游戏按钮
-        self.snake_button = QPushButton('贪吃蛇游戏')
-        self.snake_button.setFont(self.font)
-        self.snake_button.setStyleSheet("background-color: #2196F3; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.snake_button.clicked.connect(self.run_snake)
-        games_layout.addWidget(self.snake_button)
-        
-        # 创建小恐龙游戏按钮
-        if DinoGame:
-            self.dino_button = QPushButton('小恐龙游戏')
-            self.dino_button.setFont(self.font)
-            self.dino_button.setStyleSheet("background-color: #9C27B0; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-            self.dino_button.clicked.connect(self.run_dino_game)
-            games_layout.addWidget(self.dino_button)
-        
-        # 创建俄罗斯方块游戏按钮
-        if TetrisGame:
-            self.tetris_button = QPushButton('俄罗斯方块')
-            self.tetris_button.setFont(self.font)
-            self.tetris_button.setStyleSheet("background-color: #F44336; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-            self.tetris_button.clicked.connect(self.run_tetris_game)
-            games_layout.addWidget(self.tetris_button)
-        
-        main_layout.addWidget(games_group)
-        
-        # 创建工具按钮组
-        tools_group = QGroupBox("工具")
-        tools_layout = QVBoxLayout()
-        tools_group.setLayout(tools_layout)
-        tools_layout.setSpacing(10)
-        
-        # 创建小说下载器按钮
-        self.novel_downloader_button = QPushButton('小说下载器')
-        self.novel_downloader_button.setFont(self.font)
-        self.novel_downloader_button.setStyleSheet("background-color: #FF9800; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.novel_downloader_button.clicked.connect(self.run_novel_downloader)
-        tools_layout.addWidget(self.novel_downloader_button)
-        
-        main_layout.addWidget(tools_group)
-        
-        # 创建设置和日志按钮组
-        settings_group = QGroupBox("设置与帮助")
-        settings_layout = QHBoxLayout()
-        settings_group.setLayout(settings_layout)
-        
-        # 创建设置按钮
-        self.settings_button = QPushButton('设置')
-        self.settings_button.setFont(self.font)
-        self.settings_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
-        self.settings_button.clicked.connect(self.show_settings)
-        settings_layout.addWidget(self.settings_button)
-        
-        # 创建日志按钮
-        self.log_button = QPushButton('查看日志')
-        self.log_button.setFont(self.font)
-        self.log_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
-        self.log_button.clicked.connect(self.show_log)
-        settings_layout.addWidget(self.log_button)
-        
-        # 创建版本历史按钮
-        self.version_button = QPushButton('版本历史')
-        self.version_button.setFont(self.font)
-        self.version_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
-        self.version_button.clicked.connect(self.show_version_history)
-        settings_layout.addWidget(self.version_button)
-        
-        main_layout.addWidget(settings_group)
-        
-        # 创建状态栏
-        self.statusBar().showMessage("欢迎使用Python_box")
-        
-        # 创建系统托盘图标
-        self.create_tray_icon()
-        
-        # 连接窗口关闭事件
-        self.closeEvent = self.on_close_event
-        
-    def center_window(self):
-        """将窗口显示在屏幕中央偏上位置"""
-        screen = self.screen().geometry()
-        size = self.geometry()
-        # 让窗口上移30像素，使视觉效果更好
-        self.move((screen.width() - size.width()) // 2, 
-                  ((screen.height() - size.height()) // 2) - 30)
-    
-    def create_tray_icon(self):
-        """
-        创建系统托盘图标
-        设置托盘图标、菜单和相关行为
-        """
-        # 检查系统是否支持系统托盘
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        
-        # 创建系统托盘图标
-        self.tray_icon = QSystemTrayIcon(self)
-        
-        # 使用内置图标
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation)
-        self.tray_icon.setIcon(icon)
-        self.tray_icon.setToolTip("Python_box")
-        
-        # 创建托盘菜单
-        tray_menu = QMenu(self)
-        
-        # 显示主窗口动作
-        show_action = QAction("显示主窗口", self)
-        show_action.triggered.connect(self.show)
-        tray_menu.addAction(show_action)
-        
-        # 显示设置对话框动作
-        settings_action = QAction("设置", self)
-        settings_action.triggered.connect(self.show_settings)
-        tray_menu.addAction(settings_action)
-        
-        # 显示日志查看器动作
-        log_action = QAction("查看日志", self)
-        log_action.triggered.connect(self.show_log)
-        tray_menu.addAction(log_action)
-        
-        # 显示版本历史动作
-        version_action = QAction("版本历史", self)
-        version_action.triggered.connect(self.show_version_history)
-        tray_menu.addAction(version_action)
-        
-        # 退出动作
-        exit_action = QAction("退出", self)
-        exit_action.triggered.connect(QApplication.instance().quit)
-        tray_menu.addAction(exit_action)
-        
-        # 设置托盘菜单
-        self.tray_icon.setContextMenu(tray_menu)
-        
-        # 连接托盘图标激活信号
-        self.tray_icon.activated.connect(self.on_tray_icon_activated)
-        
-        # 显示托盘图标
-        self.tray_icon.show()
-    
-    def on_tray_icon_activated(self, reason):
-        """
-        处理托盘图标激活事件
-        当双击托盘图标时显示主窗口
-        """
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.show()
-
-    def changeEvent(self, event):
-        """
-        处理窗口状态变化事件
-        根据设置决定窗口最小化时的行为
-        """
-        if event.type() == event.Type.WindowStateChange:
-            # 检查窗口是否最小化
-            if self.isMinimized():
-                # 使用AppLauncher类中已经加载的settings变量
-                # 检查设置是否允许最小化到托盘
-                minimize_to_tray = self.settings.get('minimize_to_tray', True)
-                
-                if minimize_to_tray:
-                    # 如果设置允许最小化到托盘且系统托盘已启用
-                    if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
-                        self.hide()
-                        # 显示通知
-                        self.tray_icon.showMessage(
-                            "应用程序最小化",
-                            "应用程序已最小化到系统托盘，双击托盘图标可恢复显示。",
-                            QSystemTrayIcon.MessageIcon.Information,
-                            3000
-                        )
-                        # 记录操作日志
-                        logger.info("应用程序最小化到系统托盘")
-                else:
-                    # 如果设置不允许最小化到托盘，直接关闭程序
-                    logger.info("应用程序根据设置直接关闭")
-                    self.close()
-        # 调用父类的changeEvent以确保正常的事件处理流程
-        super().changeEvent(event)
-
-    def on_close_event(self, event):
-        """
-        处理窗口关闭事件
-        根据设置决定点击关闭按钮时的行为
-        """
-        # 检查设置是否允许最小化到托盘
-        minimize_to_tray = self.settings.get('minimize_to_tray', True)
-        
-        if minimize_to_tray:
-            # 如果设置允许最小化到托盘且系统托盘已启用
-            if hasattr(self, 'tray_icon') and self.tray_icon and self.tray_icon.isVisible():
-                # 隐藏主窗口而不是关闭
-                self.hide()
-                # 显示通知
-                self.tray_icon.showMessage(
-                    "应用程序最小化",
-                    "应用程序已最小化到系统托盘，双击托盘图标可恢复显示。",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    3000
-                )
-                # 记录操作日志
-                logger.info("应用程序最小化到系统托盘")
-                # 忽略关闭事件
-                event.ignore()
-                return
-        
-        # 如果设置不允许最小化到托盘或系统托盘未启用，正常关闭
-        logger.info("应用程序正常关闭")
-        event.accept()
-    
-    def log_action(self, message, log_type="info"):
-        """
-        记录操作日志
-        
-        参数:
-            message: 日志消息内容
-            log_type: 日志类型，默认为"info"，可选值包括"info"、"error"等
-        """
-        # 记录到日志文件
-        if log_type.lower() == "error":
-            logger.error(message)
-        else:
-            logger.info(message)
-        
-        # 将日志添加到历史记录中
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] [{log_type.upper()}] {message}"
-        
-        # 保存到日志历史列表
-        self.log_history.append(log_entry)
-        
-        # 限制日志历史记录的数量，防止内存占用过多
-        if len(self.log_history) > 1000:
-            self.log_history = self.log_history[-1000:]
-    
-    def create_progress_window(self, title):
-        """创建并显示进度条窗口"""
-        # 如果进度窗口已存在，先关闭
-        if self.progress_window:
-            self.progress_window.close()
-            self.progress_window = None
-            
-        # 创建新的进度窗口
-        self.progress_window = QDialog(self)
-        self.progress_window.setWindowTitle(title)
-        self.progress_window.setGeometry(100, 100, 300, 100)
-        self.progress_window.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-        
-        # 创建布局
-        layout = QVBoxLayout(self.progress_window)
-        
-        # 创建进度条
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("加载中: %p%")
-        layout.addWidget(self.progress_bar)
-        
-        # 居中显示进度窗口
-        self.progress_window.move(
-            (self.screen().geometry().width() - self.progress_window.width()) // 2,
-            (self.screen().geometry().height() - self.progress_window.height()) // 2
-        )
-        
-        # 显示进度窗口
-        self.progress_window.show()
-        
-        # 重置进度值
-        self.progress_value = 0
-        
-    def update_progress(self):
-        """更新进度条显示"""
-        if not self.progress_window or not hasattr(self, 'progress_bar'):
-            return
-        
-        # 增加进度值
-        self.progress_value += 5
-        if self.progress_value > 95:
-            self.progress_value = 95  # 保留最后5%用于实际加载完成
-        
-        self.progress_bar.setValue(self.progress_value)
-        
-        # 继续更新进度条
-        QTimer.singleShot(50, self.update_progress)
-        
-    def finalize_progress(self):
-        """完成进度显示并关闭进度窗口"""
-        if self.progress_window and hasattr(self, 'progress_bar'):
-            # 设置进度为100%
-            self.progress_bar.setValue(100)
-            self.progress_bar.setFormat("加载完成!")
-            
-            # 延迟关闭进度窗口
-            QTimer.singleShot(200, self.progress_window.close)
-    
-    def run_game2048(self):
-        """运行2048游戏，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.game2048_button)
-        try:
-            # 创建进度条窗口
-            self.create_progress_window("启动2048游戏")
-            
-            # 启动进度更新
-            self.update_progress()
-            
-            # 创建2048游戏窗口，保留主窗口可见
-            self.game2048_window = Game2048()
-            
-            # 完成进度显示
-            self.finalize_progress()
-            
-            # 显示游戏窗口
-            self.game2048_window.show()
-            # 显示后再次调用居中方法，确保窗口正确居中
-            self.game2048_window.center_window()
-        except Exception as e:
-            # 如果出现异常，确保进度窗口关闭
-            if self.progress_window:
-                self.progress_window.close()
-            QMessageBox.critical(self, '错误', f'无法运行2048游戏: {str(e)}')
-            self._reset_button_style(self.game2048_button, "#4CAF50")
-        
-    def run_snake(self):
-        """运行贪吃蛇游戏，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.snake_button)
-        try:
-            # 创建进度条窗口
-            self.create_progress_window("启动贪吃蛇游戏")
-            
-            # 启动进度更新
-            self.update_progress()
-            
-            # 创建贪吃蛇游戏窗口，保留主窗口可见
-            self.snake_window = SnakeGame()
-            
-            # 完成进度显示
-            self.finalize_progress()
-            
-            # 显示游戏窗口
-            self.snake_window.show()
-        except Exception as e:
-            # 如果出现异常，确保进度窗口关闭
-            if self.progress_window:
-                self.progress_window.close()
-            QMessageBox.critical(self, '错误', f'无法运行贪吃蛇游戏: {str(e)}')
-            self._reset_button_style(self.snake_button, "#2196F3")
-        
-    def run_novel_downloader(self):
-        """运行小说下载器，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.novel_downloader_button)
-        try:
-            # 创建进度条窗口
-            self.create_progress_window("启动小说下载器")
-            
-            # 启动进度更新
-            self.update_progress()
-            
-            # 创建小说下载器窗口，保留主窗口可见
-            self.novel_window = NovelDownloadWindow()
-            self.child_windows.append(self.novel_window)
-            
-            # 设置窗口关闭事件
-            self.novel_window.destroyed.connect(self._on_child_window_close_without_event)
-            
-            # 完成进度显示
-            self.finalize_progress()
-            
-            # 显示小说下载器窗口
-            self.novel_window.show()
-            
-            # 记录操作日志
-            self.log_action("启动小说下载器")
-        except Exception as e:
-            # 如果出现异常，确保进度窗口关闭
-            error_msg = f'无法运行小说下载器: {str(e)}'
-            if self.progress_window:
-                self.progress_window.close()
-            QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.novel_downloader_button, "#FF9800")
-            # 记录错误日志
-            self.log_action(error_msg, "error")
-        
-    def run_dino_game(self):
-        """运行小恐龙游戏，保留主窗口并显示进度条"""
-        if not DinoGame:
-            QMessageBox.warning(self, "警告", "小恐龙游戏模块不可用，请确保dino_game.py文件存在且可导入。")
-            return
-        
-        self._button_clicked_feedback(self.dino_button)
-        try:
-            # 创建进度条窗口
-            self.create_progress_window("启动小恐龙游戏")
-            
-            # 启动进度更新
-            self.update_progress()
-            
-            # 创建小恐龙游戏窗口，保留主窗口可见
-            self.dino_window = DinoGame()
-            self.child_windows.append(self.dino_window)
-            
-            # 设置窗口关闭事件（不传递已销毁的窗口对象）
-            self.dino_window.destroyed.connect(self._on_child_window_close_without_event)
-            
-            # 完成进度显示
-            self.finalize_progress()
-            
-            # 显示游戏窗口
-            self.dino_window.show()
-            
-            # 确保窗口获得焦点
-            self.dino_window.activateWindow()
-            self.dino_window.setFocus()
-            self.dino_window.grabKeyboard()
-            
-            # 记录操作日志
-            self.log_action("启动小恐龙游戏")
-        except Exception as e:
-            # 如果出现异常，确保进度窗口关闭
-            error_msg = f'无法运行小恐龙游戏: {str(e)}'
-            if self.progress_window:
-                self.progress_window.close()
-            QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.dino_button, "#9C27B0")
-            # 记录错误日志
-            self.log_action(error_msg, "error")
-        
-    def run_tetris_game(self):
-        """运行俄罗斯方块游戏，保留主窗口并显示进度条"""
-        if not TetrisGame:
-            QMessageBox.warning(self, "警告", "俄罗斯方块游戏模块不可用，请确保tetris_game.py文件存在且可导入。")
-            return
-        
-        self._button_clicked_feedback(self.tetris_button)
-        try:
-            # 创建进度条窗口
-            self.create_progress_window("启动俄罗斯方块游戏")
-            
-            # 启动进度更新
-            self.update_progress()
-            
-            # 创建俄罗斯方块游戏窗口，保留主窗口可见
-            self.tetris_window = TetrisGame()
-            self.child_windows.append(self.tetris_window)
-            
-            # 设置窗口关闭事件（不传递已销毁的窗口对象）
-            self.tetris_window.destroyed.connect(self._on_child_window_close_without_event)
-            
-            # 完成进度显示
-            self.finalize_progress()
-            
-            # 显示游戏窗口
-            self.tetris_window.show()
-            
-            # 确保窗口获得焦点
-            self.tetris_window.activateWindow()
-            self.tetris_window.setFocus()
-            self.tetris_window.grabKeyboard()
-            
-            # 记录操作日志
-            self.log_action("启动俄罗斯方块游戏")
-        except Exception as e:
-            # 如果出现异常，确保进度窗口关闭
-            error_msg = f'无法运行俄罗斯方块游戏: {str(e)}'
-            if self.progress_window:
-                self.progress_window.close()
-            QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.tetris_button, "#F44336")
-            # 记录错误日志
-            self.log_action(error_msg, "error")
-    
-    def _button_clicked_feedback(self, button):
-        """按钮点击反馈效果"""
-        original_style = button.styleSheet()
-        # 临时改变按钮样式
-        button.setStyleSheet(original_style + " background-color: #777777;")
-        # 立即重绘
-        button.repaint()
-        # 延迟一小段时间后恢复原样式
-        QTimer.singleShot(150, lambda: self._reset_button_style(button, self._get_original_color(original_style)))
-    
-    def _reset_button_style(self, button, color):
-        """重置按钮样式"""
-        button.setStyleSheet(f"background-color: {color}; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-    
-    def _get_original_color(self, style):
-        """从样式表中提取原始颜色"""
-        if "#4CAF50" in style:
-            return "#4CAF50"
-        elif "#2196F3" in style:
-            return "#2196F3"
-        elif "#FF9800" in style:
-            return "#FF9800"
-        elif "#9C27B0" in style:
-            return "#9C27B0"  # 小恐龙游戏按钮颜色
-        elif "#F44336" in style:
-            return "#F44336"  # 俄罗斯方块按钮颜色
-        elif "#607D8B" in style:
-            return "#607D8B"  # 设置和帮助按钮颜色
-        else:
-            return "#4CAF50"  # 默认颜色
-    
-    def load_settings(self):
-        """
-        加载应用程序设置
-        从app_settings.pkl文件中加载保存的设置
-        返回: 包含设置的字典
-        """
-        try:
-            import pickle
-            
-            # 尝试加载设置
-            if os.path.exists(APP_SETTINGS_FILE):
-                with open(APP_SETTINGS_FILE, 'rb') as f:
-                    settings = pickle.load(f)
-                logging.info("成功加载应用设置")
-                return settings
-            else:
-                # 如果设置文件不存在，返回默认设置
-                default_settings = {
-                    'show_welcome': True,
-                    'auto_save': True,
-                    'minimize_to_tray': True,  # 默认允许最小化到托盘
-                    'log_level': 'INFO'
-                }
-                logging.info("设置文件不存在，使用默认设置")
-                return default_settings
-        except Exception as e:
-            logging.error(f"加载设置时出错: {str(e)}")
-            # 出错时返回默认设置
-            return {
-                'show_welcome': True,
-                'auto_save': True,
-                'minimize_to_tray': True,  # 默认允许最小化到托盘
-                'log_level': 'INFO'
-            }
-    
-    def show_settings(self):
-        """显示应用设置对话框"""
-        try:
-            # 显示设置对话框
-            settings_dialog = SettingsDialog(self)
-            result = settings_dialog.exec()
-            # 记录操作日志
-            logger.info("用户打开了设置对话框")
-            
-            # 如果设置对话框返回接受（用户点击了保存），重新加载设置
-            if result == QDialog.DialogCode.Accepted:
-                self.settings = self.load_settings()
-                logger.info("成功重新加载应用设置")
-        except Exception as e:
-            print(f"显示设置对话框失败: {e}")
-            QMessageBox.critical(self, "错误", f"显示设置对话框失败: {str(e)}")
-            # 记录错误日志
-            logger.error(f"显示设置对话框失败: {str(e)}")
-    
-    def show_log(self):
-        """显示日志查看器对话框"""
-        try:
-            # 显示日志查看器
-            log_viewer = LogViewer(self)
-            log_viewer.exec()
-            # 记录操作日志
-            logger.info("用户打开了日志查看器")
-        except Exception as e:
-            print(f"显示日志查看器失败: {e}")
-            QMessageBox.critical(self, "错误", f"显示日志查看器失败: {str(e)}")
-            # 记录错误日志
-            logger.error(f"显示日志查看器失败: {str(e)}")
-    
-    def show_version_history(self):
-        """显示版本历史对话框"""
-        try:
-            # 显示版本历史对话框
-            version_dialog = VersionHistoryDialog(self)
-            version_dialog.exec()
-            # 记录操作日志
-            logger.info("用户打开了版本历史对话框")
-        except Exception as e:
-            print(f"显示版本历史对话框失败: {e}")
-            QMessageBox.critical(self, "错误", f"显示版本历史对话框失败: {str(e)}")
-            # 记录错误日志
-            logger.error(f"显示版本历史对话框失败: {str(e)}")
-    
-    def _show_launcher(self):
-        """重新显示启动器窗口"""
-        # 确保所有子窗口都已关闭
-        QTimer.singleShot(100, self.show)
-        
-    def _on_child_window_close(self, event):
-        """处理子窗口关闭事件的回调函数（用于QCloseEvent事件）"""
-        # 确保事件被接受，窗口可以正常关闭
-        event.accept()
-        # 直接显示启动器窗口
-        self._show_launcher()
-        
-    def _on_child_window_close_without_event(self):
-        """处理窗口销毁信号的回调函数（用于destroyed信号）"""
-        # 直接显示启动器窗口
-        self._show_launcher()
-            
-class CustomDialog(QDialog):
-    """自定义对话框类，用于显示各种消息提示"""
-    def __init__(self, message, title="提示", button_text="确定", parent=None):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.resize(300, 150)
-        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-        
-        # 创建布局
-        layout = QVBoxLayout()
-        
-        # 添加消息标签
-        self.message_label = QLabel(message)
-        self.message_label.setWordWrap(True)
-        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.message_label)
-        
-        # 添加按钮
-        button_layout = QHBoxLayout()
-        self.ok_button = QPushButton(button_text)
-        self.ok_button.clicked.connect(self.accept)
-        button_layout.addWidget(self.ok_button)
-        layout.addLayout(button_layout)
-        
-        # 设置样式
-        self.setStyleSheet("""
-            QDialog {
-                background-color: white;
-                border-radius: 8px;
-            }
-            QLabel {
-                color: #333;
-                font-size: 14px;
-                padding: 10px;
-            }
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 8px 16px;
-                border: none;
-                border-radius: 4px;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
-        
-        self.setLayout(layout)
 
 # ===== 2048游戏集成 =====
 class Game2048(QMainWindow):
@@ -2960,6 +3266,7 @@ class Game2048(QMainWindow):
         # 让窗口上移30像素，使视觉效果更好
         self.move((screen.width() - size.width()) // 2, 
                   ((screen.height() - size.height()) // 2) - 30)
+
 
 # ===== 贪吃蛇游戏集成 =====
 class SnakeGame(QMainWindow):
@@ -3805,6 +4112,7 @@ class GameCanvas(QWidget):
         
         # 恢复之前的绘制状态
         painter.restore()
+
 
 # ===== 小说下载器集成 =====
 # 小说下载线程，处理耗时的下载操作
@@ -5027,6 +5335,2004 @@ class NovelDownloadWindow(QWidget) :
         super().closeEvent(event)
         # 窗口关闭后会自动触发destroyed信号
 
+
+# ===== 下载相关类 =====
+# 自定义ComboBox，可精确控制下拉列表高度
+class FixedHeightComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setView(QTreeView())  # 使用树状视图
+    def showPopup(self):
+        """重写显示下拉列表的方法，设置固定高度"""
+        super().showPopup()
+        tree_view = self.view()
+        tree_view.setFixedHeight(400)  # 强制设置为400px高度
+        tree_view.setMinimumHeight(400)  # 确保至少400px
+        tree_view.setMaximumHeight(400)  # 确保不超过400px
+
+# 基础下载线程类
+class VideoDownloadThread(QThread):
+    """基础下载线程类"""
+    progress_updated = pyqtSignal(int)
+    message_received = pyqtSignal(str)
+    download_completed = pyqtSignal(bool, str)
+    def __init__(self):
+        super().__init__()
+        self.stop_requested = False
+
+    def stop(self):
+        self.stop_requested = True
+        self.message_received.emit("正在停止下载...")
+
+# M3U8 下载线程类
+class M3U8VideoDownloadThread(VideoDownloadThread):
+    """m3u8下载线程"""
+
+    def __init__(self, url, save_path, ffmpeg_path, convert_to_mp4=True, file_name=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.ffmpeg_path = ffmpeg_path
+        self.convert_to_mp4 = convert_to_mp4
+        self.file_name = file_name
+        self.total_segments = 0
+        self.downloaded_segments = 0
+        self.process = None  # 存储子进程引用
+
+    @staticmethod
+    def find_ffmpeg():
+        """自动查找系统中的ffmpeg"""
+        try:
+            ffmpeg_path = shutil.which('ffmpeg')
+            if ffmpeg_path:
+                return os.path.abspath(ffmpeg_path)
+
+            if sys.platform.startswith('win'):
+                paths = os.environ['PATH'].split(';')
+                for path in paths:
+                    ffmpeg_exe = os.path.join(path, 'ffmpeg.exe')
+                    if os.path.exists(ffmpeg_exe) and os.path.isfile(ffmpeg_exe):
+                        return os.path.abspath(ffmpeg_exe)
+                return "ffmpeg.exe"
+            else:
+                common_paths = [
+                    '/usr/bin/ffmpeg',
+                    '/usr/local/bin/ffmpeg',
+                    '/opt/homebrew/bin/ffmpeg',
+                    '/usr/local/Cellar/ffmpeg/*/bin/ffmpeg'
+                ]
+                for path in common_paths:
+                    if os.path.exists(path) and os.path.isfile(path):
+                        return os.path.abspath(path)
+                return "ffmpeg"
+        except Exception as e:
+            return "ffmpeg"
+
+    def parse_m3u8(self, m3u8_content, base_url):
+        """解析m3u8内容获取TS片段"""
+        lines = m3u8_content.split('\n')
+        segments = []
+
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line.startswith('#EXTINF:') or line.startswith('#EXT-X-KEY:'):
+                try:
+                    if i + 1 < len(lines):
+                        ts_url = lines[i + 1].strip()
+                        if not ts_url.startswith('http') and not ts_url.startswith('#'):
+                            ts_url = urljoin(base_url, ts_url)
+                        segments.append(ts_url)
+                except Exception as e:
+                    self.message_received.emit(f"解析m3u8出错: {str(e)}")
+
+        return segments
+        
+    def parse_m3u8_file(self, url):
+        """下载并解析M3U8文件获取TS片段列表"""
+        try:
+            self.message_received.emit(f"正在解析M3U8文件: {url}")
+            
+            # 发送请求获取M3U8内容
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            
+            # 处理可能的编码问题
+            m3u8_content = response.text
+            
+            # 解析M3U8内容获取TS片段
+            segments = self.parse_m3u8(m3u8_content, url)
+            
+            return segments
+        except Exception as e:
+            self.message_received.emit(f"下载或解析M3U8文件失败: {str(e)}")
+            return []
+            
+    def download_ts_segments(self, segments, temp_dir):
+        """下载所有TS片段"""
+        downloaded_files = []
+        
+        if not segments:
+            return downloaded_files
+            
+        # 设置请求头
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+        }
+        
+        session = requests.Session()
+        
+        for i, segment_url in enumerate(segments):
+            if self.stop_requested:
+                break
+                
+            try:
+                # 生成文件名
+                segment_filename = f"segment_{i:05d}.ts"
+                segment_path = os.path.join(temp_dir, segment_filename)
+                
+                # 下载片段
+                self.message_received.emit(f"下载片段 {i+1}/{self.total_segments}: {segment_url}")
+                
+                response = session.get(segment_url, headers=headers, stream=True, timeout=30)
+                response.raise_for_status()
+                
+                # 写入文件
+                with open(segment_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                downloaded_files.append(segment_path)
+                self.downloaded_segments += 1
+                
+                # 更新进度
+                progress = int((self.downloaded_segments / self.total_segments) * 90)  # 留10%给合并
+                self.progress_updated.emit(progress)
+                
+            except Exception as e:
+                self.message_received.emit(f"下载片段 {i+1} 失败: {str(e)}")
+                # 继续尝试下载其他片段
+                continue
+                
+        return downloaded_files
+
+    def merge_ts_files(self, ts_files, output_path):
+        """合并TS文件"""
+        if not ts_files:
+            return False
+
+        # 限制列表文件路径长度，防止过长路径导致问题
+        max_path_length = 255
+        if len(output_path) > max_path_length:
+            self.message_received.emit(f"警告: 输出路径过长，可能导致合并失败")
+
+        list_file = os.path.splitext(output_path)[0] + ".txt"
+
+        # 确保列表文件路径有效
+        try:
+            with open(list_file, 'w', encoding='utf-8') as f:
+                for ts_file in ts_files:
+                    # 检查每个片段路径长度
+                    if len(ts_file) > max_path_length:
+                        self.message_received.emit(f"警告: 片段路径过长: {ts_file[:50]}...")
+                    f.write(f"file '{ts_file}'\n")
+        except Exception as e:
+            self.message_received.emit(f"创建列表文件失败: {str(e)}")
+            return False
+
+        self.message_received.emit("开始合并视频片段...")
+        cmd = [
+            self.ffmpeg_path,
+            '-y', '-f', 'concat', '-safe', '0', '-i', list_file,
+        ]
+
+        if self.convert_to_mp4:
+            cmd.extend(['-c:v', 'copy', '-c:a', 'copy', output_path])
+        else:
+            cmd.extend(['-c', 'copy', output_path])
+
+        try:
+            self.progress_updated.emit(95)
+
+            # 使用更安全的方式启动子进程
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith('win') else 0
+            )
+
+            for line in self.process.stdout:
+                if self.stop_requested:
+                    self.terminate_process()  # 使用安全的进程终止方法
+                    return False
+                if "frame=" in line:
+                    self.message_received.emit(f"合并中: {line.strip()}")
+
+            self.process.wait()
+
+            if os.path.exists(list_file):
+                os.remove(list_file)
+
+            return self.process.returncode == 0
+
+        except Exception as e:
+            self.message_received.emit(f"合并出错: {str(e)}")
+            return False
+        finally:
+            if os.path.exists(list_file):
+                os.remove(list_file)
+            self.process = None  # 清理进程引用
+
+    def terminate_process(self):
+        """安全终止子进程"""
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)  # 等待5秒
+            except Exception as e:
+                self.message_received.emit(f"终止进程失败: {str(e)}")
+                try:
+                    self.process.kill()  # 强制终止
+                except:
+                    pass
+            finally:
+                self.process = None
+
+    def run(self):
+        """线程主执行函数"""
+        try:
+            # 生成随机临时目录
+            temp_dir = os.path.join(os.getenv('TEMP', '/tmp'), f"m3u8_temp_{uuid.uuid4().hex}")
+            os.makedirs(temp_dir, exist_ok=True)
+
+            # 生成输出文件名
+            if not self.file_name:
+                # 从URL中提取文件名或生成随机名称
+                base_name = urlparse(self.url).path.split('/')[-1]
+                if not base_name or len(base_name) < 3:
+                    base_name = f"video_{int(time.time())}"
+                file_name = f"{os.path.splitext(base_name)[0]}.mp4" if self.convert_to_mp4 else base_name
+            else:
+                file_name = self.file_name
+                # 确保文件名有正确的扩展名
+                if self.convert_to_mp4 and not file_name.lower().endswith('.mp4'):
+                    file_name += '.mp4'
+
+            output_path = os.path.join(self.save_path, file_name)
+
+            # 确保保存目录存在
+            os.makedirs(self.save_path, exist_ok=True)
+
+            # 解析M3U8文件获取片段列表
+            segments = self.parse_m3u8_file(self.url)
+            if not segments:
+                self.download_completed.emit(False, "无法解析M3U8文件或没有可用片段")
+                return
+
+            self.total_segments = len(segments)
+            self.message_received.emit(f"找到 {self.total_segments} 个视频片段")
+
+            # 下载所有片段
+            files = self.download_ts_segments(segments, temp_dir)
+
+            if not files or self.stop_requested:
+                if self.stop_requested:
+                    self.download_completed.emit(False, "下载已取消")
+                else:
+                    self.download_completed.emit(False, "片段下载失败")
+                return
+
+            success = self.merge_ts_files(files, output_path)
+
+            if success:
+                self.progress_updated.emit(100)
+                self.download_completed.emit(True, f"下载完成，保存至: {output_path}")
+            else:
+                self.download_completed.emit(False, "合并失败")
+
+        except Exception as e:
+            self.message_received.emit(f"致命错误: {str(e)}")
+            self.download_completed.emit(False, f"处理出错: {str(e)}")
+        finally:
+            # 确保临时文件清理，无论成功或失败
+            if os.path.exists(temp_dir):
+                self.cleanup_temp_dir(temp_dir)
+
+    def cleanup_temp_dir(self, temp_dir):
+        """安全清理临时目录"""
+        try:
+            # 先尝试删除文件
+            for file in os.listdir(temp_dir):
+                file_path = os.path.join(temp_dir, file)
+                try:
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    self.message_received.emit(f"删除临时文件失败: {file} - {str(e)}")
+
+            # 然后删除目录
+            try:
+                os.rmdir(temp_dir)
+            except Exception as e:
+                self.message_received.emit(f"删除临时目录失败: {str(e)}")
+        except Exception as e:
+            self.message_received.emit(f"清理临时文件时出错: {str(e)}")
+
+# 直接下载线程 - 用于MP4、FLV、F4V、WebM等格式
+class DirectVideoDownloadThread(VideoDownloadThread):
+    """直接下载线程 - 用于MP4、FLV、F4V、WebM等格式"""
+
+    def __init__(self, url, save_path, file_name=None, expected_ext=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.file_name = file_name
+        self.expected_ext = expected_ext
+
+    def run(self):
+        """线程主执行函数"""
+        try:
+            self.message_received.emit(f"开始处理地址: {self.url}")
+
+            # 确保保存目录存在
+            if not os.path.exists(self.save_path):
+                os.makedirs(self.save_path)
+
+            # 生成文件名
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+            # 尝试从URL提取文件名和扩展名
+            url_basename = os.path.basename(urlparse(self.url).path).split('?')[0].split('#')[0]
+            if '.' in url_basename:
+                url_name, url_ext = os.path.splitext(url_basename)
+                url_ext = url_ext[1:].lower()  # 移除点并转为小写
+            else:
+                url_name = url_basename
+                url_ext = ""
+
+            # 确定最终扩展名
+            ext = self.expected_ext or url_ext or "mp4"
+
+            # 确定最终文件名
+            output_filename = self.file_name or f"video_{timestamp}.{ext}"
+            output_path = os.path.join(self.save_path, output_filename)
+
+            # 检查文件是否已存在
+            counter = 1
+            while os.path.exists(output_path):
+                name, ext = os.path.splitext(output_filename)
+                output_filename = f"{name}_{counter}{ext}"
+                output_path = os.path.join(self.save_path, output_filename)
+                counter += 1
+
+            # 开始下载
+            self.message_received.emit(f"开始下载至: {output_path}")
+            session = requests.Session()
+            session.max_redirects = 30
+
+            try:
+                # 获取文件大小
+                head_response = session.head(self.url, allow_redirects=True, timeout=15)
+                head_response.raise_for_status()
+                file_size = int(head_response.headers.get('content-length', 0))
+                final_url = head_response.url
+            except Exception as e:
+                self.message_received.emit(f"HEAD请求失败，尝试直接下载: {str(e)}")
+                get_response = session.get(self.url, stream=True, allow_redirects=True, timeout=15)
+                get_response.raise_for_status()
+                file_size = int(get_response.headers.get('content-length', 0))
+                final_url = get_response.url
+                get_response.close()
+
+            # 检查断点续传
+            resume_pos = 0
+            if os.path.exists(output_path):
+                resume_pos = os.path.getsize(output_path)
+                if file_size > 0 and resume_pos >= file_size:
+                    self.download_completed.emit(True, f"文件已存在: {output_path}")
+                    return
+                elif file_size > 0:
+                    self.message_received.emit(f"检测到部分文件，将从 {resume_pos} 字节继续下载")
+
+            # 开始下载
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+            if resume_pos > 0:
+                headers['Range'] = f'bytes={resume_pos}-'
+
+            response = session.get(final_url, stream=True, headers=headers, timeout=30)
+            response.raise_for_status()
+
+            mode = 'ab' if resume_pos > 0 else 'wb'
+            downloaded_size = resume_pos
+            chunk_size = 8192
+
+            with open(output_path, mode) as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if self.stop_requested:
+                        response.close()
+                        self.download_completed.emit(False, "下载已取消")
+                        return
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        if file_size > 0:
+                            progress = int((downloaded_size / file_size) * 100)
+                            self.progress_updated.emit(progress)
+                            if progress % 10 == 0:
+                                self.message_received.emit(f"已下载 {downloaded_size}/{file_size} 字节 ({progress}%)")
+                        else:
+                            self.message_received.emit(f"已下载 {downloaded_size} 字节")
+
+            # 验证文件大小
+            if file_size > 0 and os.path.getsize(output_path) != file_size:
+                self.message_received.emit(f"警告: 下载文件大小与预期不符 ({os.path.getsize(output_path)}/{file_size})")
+
+            self.progress_updated.emit(100)
+            self.download_completed.emit(True, f"下载完成，保存至: {output_path}")
+
+        except Exception as e:
+            self.download_completed.emit(False, f"下载失败: {str(e)}")
+
+# 音频下载线程 - 用于MP3、WMA、WAV、M4A等格式
+class AudioVideoDownloadThread(VideoDownloadThread):
+    """音频下载线程 - 用于MP3、WMA、WAV、M4A等格式"""
+
+    def __init__(self, url, save_path, ffmpeg_path, file_name=None, expected_ext=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.ffmpeg_path = ffmpeg_path
+        self.file_name = file_name
+        self.expected_ext = expected_ext
+
+    def run(self):
+        """线程主执行函数"""
+        try:
+            self.message_received.emit(f"开始处理音频地址: {self.url}")
+
+            # 确保保存目录存在
+            if not os.path.exists(self.save_path):
+                os.makedirs(self.save_path)
+
+            # 生成文件名
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+            # 尝试从URL提取文件名和扩展名
+            url_basename = os.path.basename(urlparse(self.url).path).split('?')[0].split('#')[0]
+            if '.' in url_basename:
+                url_name, url_ext = os.path.splitext(url_basename)
+                url_ext = url_ext[1:].lower()  # 移除点并转为小写
+            else:
+                url_name = url_basename
+                url_ext = ""
+
+            # 确定最终扩展名
+            ext = self.expected_ext or url_ext or "mp3"
+
+            # 确定最终文件名
+            output_filename = self.file_name or f"audio_{timestamp}.{ext}"
+            output_path = os.path.join(self.save_path, output_filename)
+
+            # 检查文件是否已存在
+            counter = 1
+            while os.path.exists(output_path):
+                name, ext = os.path.splitext(output_filename)
+                output_filename = f"{name}_{counter}{ext}"
+                output_path = os.path.join(self.save_path, output_filename)
+                counter += 1
+
+            # 开始下载
+            self.message_received.emit(f"开始下载至: {output_path}")
+            session = requests.Session()
+            session.max_redirects = 30
+
+            try:
+                # 获取文件大小
+                head_response = session.head(self.url, allow_redirects=True, timeout=15)
+                head_response.raise_for_status()
+                file_size = int(head_response.headers.get('content-length', 0))
+                final_url = head_response.url
+            except Exception as e:
+                self.message_received.emit(f"HEAD请求失败，尝试直接下载: {str(e)}")
+                get_response = session.get(self.url, stream=True, allow_redirects=True, timeout=15)
+                get_response.raise_for_status()
+                file_size = int(get_response.headers.get('content-length', 0))
+                final_url = get_response.url
+                get_response.close()
+
+            # 检查断点续传
+            resume_pos = 0
+            if os.path.exists(output_path):
+                resume_pos = os.path.getsize(output_path)
+                if file_size > 0 and resume_pos >= file_size:
+                    self.download_completed.emit(True, f"文件已存在: {output_path}")
+                    return
+                elif file_size > 0:
+                    self.message_received.emit(f"检测到部分文件，将从 {resume_pos} 字节继续下载")
+
+            # 开始下载
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+            if resume_pos > 0:
+                headers['Range'] = f'bytes={resume_pos}-'
+
+            response = session.get(final_url, stream=True, headers=headers, timeout=30)
+            response.raise_for_status()
+
+            mode = 'ab' if resume_pos > 0 else 'wb'
+            downloaded_size = resume_pos
+            chunk_size = 8192
+
+            with open(output_path, mode) as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if self.stop_requested:
+                        response.close()
+                        self.download_completed.emit(False, "下载已取消")
+                        return
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        if file_size > 0:
+                            progress = int((downloaded_size / file_size) * 100)
+                            self.progress_updated.emit(progress)
+                            if progress % 10 == 0:
+                                self.message_received.emit(f"已下载 {downloaded_size}/{file_size} 字节 ({progress}%)")
+                        else:
+                            self.message_received.emit(f"已下载 {downloaded_size} 字节")
+
+            # 验证文件大小
+            if file_size > 0 and os.path.getsize(output_path) != file_size:
+                self.message_received.emit(f"警告: 下载文件大小与预期不符 ({os.path.getsize(output_path)}/{file_size})")
+
+            # 优化的音频转换逻辑，支持更多格式
+            if self.ffmpeg_path:
+                # 定义支持的输入格式列表
+                supported_input_formats = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
+                
+                # 定义输出格式优先级，优先保持原有格式，否则转换为mp3
+                output_format = ext if ext in supported_input_formats else 'mp3'
+                converted_path = os.path.splitext(output_path)[0] + f".{output_format}"
+                
+                # 无论原始格式是什么，都尝试使用FFmpeg进行处理，确保兼容性
+                self.message_received.emit(f"开始处理音频格式: {ext} -> {output_format}")
+                
+                # 构建针对不同格式优化的FFmpeg命令
+                cmd = [
+                    self.ffmpeg_path,
+                    '-y',  # 覆盖现有文件
+                    '-i', output_path,  # 输入文件
+                    '-vn',  # 禁用视频流
+                ]
+                
+                # 根据目标格式设置不同的编码参数
+                if output_format == 'mp3':
+                    cmd.extend(['-c:a', 'libmp3lame', '-q:a', '2'])  # MP3高质量设置
+                elif output_format == 'wav':
+                    cmd.extend(['-c:a', 'pcm_s16le', '-ar', '44100'])  # WAV无损格式
+                elif output_format == 'm4a':
+                    cmd.extend(['-c:a', 'aac', '-b:a', '256k'])  # AAC高质量设置
+                elif output_format in ['ogg', 'opus']:
+                    cmd.extend(['-c:a', 'libopus', '-b:a', '192k'])  # Opus高质量设置
+                elif output_format == 'flac':
+                    cmd.extend(['-c:a', 'flac', '-compression_level', '8'])  # FLAC无损压缩
+                else:
+                    cmd.extend(['-c:a', 'copy'])  # 对于其他支持的格式，直接复制音频流
+                
+                # 添加输出路径
+                cmd.append(converted_path)
+
+                try:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        universal_newlines=True
+                    )
+
+                    # 捕获FFmpeg输出，以便更好地调试和显示进度
+                    error_output = []
+                    for line in process.stdout:
+                        if self.stop_requested:
+                            process.terminate()
+                            self.download_completed.emit(False, "转换已取消")
+                            return
+                        # 收集错误信息
+                        if 'error' in line.lower() or 'failed' in line.lower():
+                            error_output.append(line.strip())
+
+                    process.wait()
+
+                    if process.returncode == 0:
+                        # 转换成功，删除原始文件（如果路径不同）
+                        if output_path != converted_path:
+                            os.remove(output_path)
+                            output_path = converted_path
+                        self.message_received.emit(f"音频处理完成，格式: {output_format}")
+                    else:
+                        error_msg = "\n".join(error_output) if error_output else "未知错误"
+                        self.message_received.emit(f"格式处理失败，错误: {error_msg}\n保留原始文件")
+
+                except Exception as e:
+                    self.message_received.emit(f"格式处理出错: {str(e)}")
+
+            self.progress_updated.emit(100)
+            self.download_completed.emit(True, f"下载完成，保存至: {output_path}")
+
+        except Exception as e:
+            self.download_completed.emit(False, f"下载失败: {str(e)}")
+
+# 自适应下载线程 - 用于HLS、DASH等格式
+class AdaptiveVideoDownloadThread(VideoDownloadThread):
+    """自适应下载线程 - 用于HLS、DASH等格式"""
+
+    def __init__(self, url, save_path, ffmpeg_path, file_name=None, format_type=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.ffmpeg_path = ffmpeg_path
+        self.file_name = file_name
+        self.format_type = format_type or "mp4"
+
+    def run(self):
+        """线程主执行函数"""
+        try:
+            self.message_received.emit(f"开始处理自适应流地址: {self.url}")
+
+            # 验证FFmpeg
+            try:
+                subprocess.run(
+                    [self.ffmpeg_path, '-version'],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+            except Exception as e:
+                self.download_completed.emit(False, f"FFmpeg不可用: {str(e)}")
+                return
+
+            if not os.path.exists(self.save_path):
+                os.makedirs(self.save_path)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            output_filename = self.file_name or f"video_{timestamp}.{self.format_type}"
+            output_path = os.path.join(self.save_path, output_filename)
+
+            self.message_received.emit(f"开始使用FFmpeg下载...")
+
+            # 使用FFmpeg直接下载自适应流
+            cmd = [
+                self.ffmpeg_path,
+                '-y',
+                '-i', self.url,
+                '-c', 'copy',
+                output_path
+            ]
+
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True
+                )
+
+                while process.poll() is None:
+                    if self.stop_requested:
+                        process.terminate()
+                        self.download_completed.emit(False, "下载已取消")
+                        return
+                    time.sleep(0.5)
+
+                if process.returncode == 0:
+                    self.progress_updated.emit(100)
+                    self.download_completed.emit(True, f"下载完成，保存至: {output_path}")
+                else:
+                    self.download_completed.emit(False, f"下载失败，FFmpeg返回代码: {process.returncode}")
+
+            except Exception as e:
+                self.download_completed.emit(False, f"下载出错: {str(e)}")
+
+        except Exception as e:
+            self.download_completed.emit(False, f"处理出错: {str(e)}")
+
+# 新增：图片下载线程类
+class ImageDownloadThread(VideoDownloadThread):
+    """图片下载线程"""
+
+    def __init__(self, url, save_path, file_name=None, expected_ext=None):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.file_name = file_name
+        self.expected_ext = expected_ext
+
+    def run(self):
+        """线程主执行函数"""
+        try:
+            self.message_received.emit(f"开始处理图片地址: {self.url}")
+
+            # 确保保存目录存在
+            if not os.path.exists(self.save_path):
+                os.makedirs(self.save_path)
+
+            # 生成文件名
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+
+            # 尝试从URL提取文件名和扩展名
+            url_basename = os.path.basename(urlparse(self.url).path).split('?')[0].split('#')[0]
+            if '.' in url_basename:
+                url_name, url_ext = os.path.splitext(url_basename)
+                url_ext = url_ext[1:].lower()  # 移除点并转为小写
+            else:
+                url_name = url_basename
+                url_ext = ""
+
+            # 确定最终扩展名
+            ext = self.expected_ext or url_ext or "jpg"
+
+            # 常见图片格式映射
+            image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"]
+            if ext not in image_formats:
+                ext = "jpg"  # 默认为JPG
+
+            # 确定最终文件名
+            output_filename = self.file_name or f"image_{timestamp}.{ext}"
+            output_path = os.path.join(self.save_path, output_filename)
+
+            # 检查文件是否已存在
+            counter = 1
+            while os.path.exists(output_path):
+                name, ext = os.path.splitext(output_filename)
+                output_filename = f"{name}_{counter}{ext}"
+                output_path = os.path.join(self.save_path, output_filename)
+                counter += 1
+
+            # 开始下载
+            self.message_received.emit(f"开始下载至: {output_path}")
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+            }
+
+            try:
+                # 发送HEAD请求获取内容类型
+                head_response = requests.head(self.url, headers=headers, timeout=15)
+                head_response.raise_for_status()
+
+                content_type = head_response.headers.get('content-type', '').lower()
+                if 'image' not in content_type:
+                    self.download_completed.emit(False, f"URL指向的不是图片类型: {content_type}")
+                    return
+
+                # 尝试从Content-Type确定扩展名
+                if not ext and 'content-type' in head_response.headers:
+                    content_type = head_response.headers['content-type'].lower()
+                    if 'jpeg' in content_type:
+                        ext = 'jpg'
+                    elif 'png' in content_type:
+                        ext = 'png'
+                    elif 'gif' in content_type:
+                        ext = 'gif'
+                    elif 'webp' in content_type:
+                        ext = 'webp'
+                    elif 'svg' in content_type:
+                        ext = 'svg'
+                    elif 'bmp' in content_type:
+                        ext = 'bmp'
+                    elif 'tiff' in content_type:
+                        ext = 'tiff'
+
+                # 如果扩展名无效，使用从Content-Type确定的扩展名
+                if ext not in image_formats and 'content-type' in head_response.headers:
+                    output_filename = f"image_{timestamp}.{ext}"
+                    output_path = os.path.join(self.save_path, output_filename)
+
+                # 获取文件大小
+                file_size = int(head_response.headers.get('content-length', 0))
+
+            except Exception as e:
+                self.message_received.emit(f"HEAD请求失败，直接下载: {str(e)}")
+                file_size = 0
+
+            # 开始下载
+            try:
+                response = requests.get(self.url, headers=headers, stream=True, timeout=30)
+                response.raise_for_status()
+
+                with open(output_path, 'wb') as f:
+                    downloaded_size = 0
+                    chunk_size = 8192
+
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if self.stop_requested:
+                            response.close()
+                            self.download_completed.emit(False, "下载已取消")
+                            return
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            if file_size > 0:
+                                progress = int((downloaded_size / file_size) * 100)
+                                self.progress_updated.emit(progress)
+                                if progress % 10 == 0:
+                                    self.message_received.emit(
+                                        f"已下载 {downloaded_size}/{file_size} 字节 ({progress}%)")
+                            else:
+                                self.message_received.emit(f"已下载 {downloaded_size} 字节")
+
+                # 验证文件大小
+                if file_size > 0 and os.path.getsize(output_path) != file_size:
+                    self.message_received.emit(
+                        f"警告: 下载文件大小与预期不符 ({os.path.getsize(output_path)}/{file_size})")
+
+                self.progress_updated.emit(100)
+                self.download_completed.emit(True, f"图片下载完成，保存至: {output_path}")
+
+            except Exception as e:
+                self.download_completed.emit(False, f"图片下载失败: {str(e)}")
+
+        except Exception as e:
+            self.download_completed.emit(False, f"处理出错: {str(e)}")
+
+# 视频下载器主窗口类
+class VideoDownloaderWindow(QWidget):
+    """视频下载器主窗口"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.VIDEO_OUTPUT_DIR = "video_output"
+        self.MUSIC_OUTPUT_DIR = "music_output"
+        self.IMAGE_OUTPUT_DIR = "image_output"  # 新增图片输出目录
+        self.ensure_output_dirs_exist()
+        self.init_ui()
+        self.load_settings()
+        self.download_thread = None  # 初始化下载线程变量
+        # 设置窗口位置在上一个窗口的左上角
+        if parent and parent.isVisible():
+            parent_pos = parent.pos()
+            self.move(parent_pos)
+
+    def ensure_output_dirs_exist(self):
+        """确保默认输出目录存在"""
+        if not os.path.exists(self.VIDEO_OUTPUT_DIR):
+            os.makedirs(self.VIDEO_OUTPUT_DIR)
+        if not os.path.exists(self.MUSIC_OUTPUT_DIR):
+            os.makedirs(self.MUSIC_OUTPUT_DIR)
+        if not os.path.exists(self.IMAGE_OUTPUT_DIR):  # 新增图片目录检查
+            os.makedirs(self.IMAGE_OUTPUT_DIR)
+
+    def init_ui(self):
+        """初始化界面"""
+        self.setWindowTitle("多功能下载器")  # 标题改为更通用的名称
+        self.setMinimumSize(600, 600)
+
+        # 主布局
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+
+        # 设置区域
+        settings_group = QGroupBox("下载设置")
+        settings_layout = QFormLayout()
+        settings_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        settings_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        settings_layout.setSpacing(10)
+
+        # URL输入
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("请输入视频、音频或图片URL")  # 更新提示文本
+        settings_layout.addRow("URL:", self.url_input)
+
+        # 美化的格式选择器
+        format_layout = QHBoxLayout()
+        self.format_combo = FixedHeightComboBox()  # 使用自定义ComboBox
+        self.format_combo.setMinimumWidth(250)
+
+        # 添加视频格式分组
+        video_group = QStandardItem("视频格式")
+        video_group.setFlags(Qt.ItemFlag.ItemIsEnabled)  # 分组项不可选
+        video_formats = [
+            "MP4", "FLV", "F4V", "WebM", "MOV", "MKV",
+            "AVI", "WMV", "ASF", "DIVX", "MPEG4", "OGV"
+        ]
+
+        # 添加音频格式分组
+        audio_group = QStandardItem("音频格式")
+        audio_group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        audio_formats = [
+            "MP3", "WMA", "WAV", "M4A", "AAC", "OGG", "OPUS", "WEBA"
+        ]
+
+        # 添加图片格式分组（新增）
+        image_group = QStandardItem("图片格式")
+        image_group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        image_formats = [
+            "JPG", "PNG", "GIF", "BMP", "WebP", "SVG", "TIFF"
+        ]
+
+        # 添加流媒体格式分组
+        stream_group = QStandardItem("流媒体格式")
+        stream_group.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        stream_formats = [
+            "M3U8", "HLS", "M3U", "MPD"
+        ]
+
+        # 创建模型并添加分组
+        model = QStandardItemModel()
+        model.insertRow(0, QStandardItem("自动检测"))
+        model.appendRow(video_group)
+        for fmt in video_formats:
+            item = QStandardItem(fmt)
+            video_group.appendRow(item)
+
+        model.appendRow(audio_group)
+        for fmt in audio_formats:
+            item = QStandardItem(fmt)
+            audio_group.appendRow(item)
+
+        # 添加图片格式
+        model.appendRow(image_group)
+        for fmt in image_formats:
+            item = QStandardItem(fmt)
+            image_group.appendRow(item)
+
+        model.appendRow(stream_group)
+        for fmt in stream_formats:
+            item = QStandardItem(fmt)
+            stream_group.appendRow(item)
+
+        self.format_combo.setModel(model)
+        self.format_combo.setCurrentIndex(0)  # 默认选中自动检测
+
+        # 增强树状图视觉效果
+        self.format_combo.setView(QTreeView())
+        tree_view = self.format_combo.view()
+        tree_view.setHeaderHidden(True)  # 确保表头被隐藏
+        tree_view.setIndentation(15)
+
+        # 设置样式表（移除max-height限制）
+        self.format_combo.setStyleSheet("""
+            QComboBox {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+                min-width: 120px;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 25px;
+                border-left: 1px solid #ccc;
+                border-radius: 0 4px 4px 0;
+            }
+            QTreeView {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 2px;
+                background-color: white;
+            }
+            QTreeView::item {
+                height: 22px;
+                border-radius: 2px;
+            }
+            QTreeView::item:selected {
+                background-color: #E6F2FF;
+                color: #2196F3;
+            }
+            QTreeView::item:hover:!selected {
+                background-color: #F0F0F0;
+            }
+            QTreeView::item:has-children {
+                font-weight: bold;
+                color: #555;
+            }
+        """)
+
+        format_layout.addWidget(QLabel("格式:"))
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        settings_layout.addRow("", format_layout)
+
+        # 文件名
+        self.filename_input = QLineEdit()
+        self.filename_input.setPlaceholderText("留空则自动生成")
+        settings_layout.addRow("文件名:", self.filename_input)
+
+        # FFmpeg路径
+        ffmpeg_layout = QHBoxLayout()
+        self.ffmpeg_input = QLineEdit()
+        ffmpeg_browse_btn = QPushButton("浏览...")
+        ffmpeg_browse_btn.clicked.connect(self.browse_ffmpeg)
+        ffmpeg_layout.addWidget(self.ffmpeg_input)
+        ffmpeg_layout.addWidget(ffmpeg_browse_btn)
+        settings_layout.addRow("FFmpeg路径:", ffmpeg_layout)
+
+        # 保存路径
+        path_layout = QHBoxLayout()
+        self.path_input = QLineEdit()
+        path_browse_btn = QPushButton("浏览...")
+        path_browse_btn.clicked.connect(self.browse_save_path)
+        path_layout.addWidget(self.path_input)
+        path_layout.addWidget(path_browse_btn)
+        settings_layout.addRow("视频保存路径:", path_layout)
+
+        # 新增：音乐保存路径
+        music_path_layout = QHBoxLayout()
+        self.music_path_input = QLineEdit()
+        music_browse_btn = QPushButton("浏览...")
+        music_browse_btn.clicked.connect(self.browse_music_save_path)
+        music_path_layout.addWidget(self.music_path_input)
+        music_path_layout.addWidget(music_browse_btn)
+        settings_layout.addRow("音乐保存路径:", music_path_layout)
+
+        # 新增：图片保存路径
+        image_path_layout = QHBoxLayout()
+        self.image_path_input = QLineEdit()
+        self.image_path_input.setText(self.IMAGE_OUTPUT_DIR)  # 设置默认图片路径
+        image_browse_btn = QPushButton("浏览...")
+        image_browse_btn.clicked.connect(self.browse_image_save_path)
+        image_path_layout.addWidget(self.image_path_input)
+        image_path_layout.addWidget(image_browse_btn)
+        settings_layout.addRow("图片保存路径:", image_path_layout)
+
+        # 转换选项
+        self.convert_checkbox = QCheckBox("转换为MP4/MP3格式")
+        self.convert_checkbox.setChecked(True)
+        settings_layout.addRow("格式设置:", self.convert_checkbox)
+
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        self.download_btn = QPushButton("开始下载")
+        self.download_btn.clicked.connect(self.start_download)
+        self.stop_btn = QPushButton("停止下载")
+        self.stop_btn.clicked.connect(self.stop_download)
+        self.stop_btn.setEnabled(False)
+        self.save_settings_btn = QPushButton("保存设置")
+        self.save_settings_btn.clicked.connect(self.save_settings)
+
+        btn_layout.addWidget(self.download_btn)
+        btn_layout.addWidget(self.stop_btn)
+        btn_layout.addWidget(self.save_settings_btn)
+        settings_layout.addRow("", btn_layout)
+
+        settings_group.setLayout(settings_layout)
+        main_layout.addWidget(settings_group)
+
+        # 公共日志和进度区域
+        progress_layout = QVBoxLayout()
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("准备就绪")
+        progress_layout.addWidget(self.progress_bar)
+
+        log_group = QGroupBox("下载日志")
+        log_layout = QVBoxLayout()
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        font = QFont()
+        font.setPointSize(9)
+        self.log_display.setFont(font)
+        log_layout.addWidget(self.log_display)
+        log_group.setLayout(log_layout)
+        progress_layout.addWidget(log_group)
+
+        main_layout.addLayout(progress_layout)
+
+        self.setLayout(main_layout)
+        self.setup_styles()
+
+    def setup_styles(self):
+        """设置界面样式"""
+        self.setStyleSheet("""
+            QWidget {
+                font-family: "Microsoft YaHei", sans-serif;
+                font-size: 14px;
+            }
+            QGroupBox {
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding: 15px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                font-weight: bold;
+                color: #333;
+            }
+            QLineEdit {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+            }
+            QLineEdit:focus {
+                border-color: #2196F3;
+            }
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                padding: 6px 12px;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0b7dda;
+            }
+            QPushButton:pressed {
+                background-color: #0b7dda;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+            QProgressBar {
+                height: 24px;
+                border-radius: 4px;
+                text-align: center;
+                border: 1px solid #ccc;
+            }
+            QProgressBar::chunk {
+                background-color: #2196F3;
+                border-radius: 2px;
+            }
+            QTextEdit {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QCheckBox {
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QComboBox {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+                min-width: 120px;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 25px;
+                border-left: 1px solid #ccc;
+                border-radius: 0 4px 4px 0;
+            }
+            QComboBox::down-arrow {
+                image: url(:/icons/down_arrow.png);
+                width: 16px;
+                height: 16px;
+            }
+            QTreeView {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 2px;
+                background-color: white;
+            }
+            QTreeView::item {
+                height: 22px;
+                border-radius: 2px;
+            }
+            QTreeView::item:selected {
+                background-color: #E6F2FF;
+                color: #2196F3;
+            }
+            QTreeView::item:hover:!selected {
+                background-color: #F0F0F0;
+            }
+            QTreeView::item:has-children {
+                font-weight: bold;
+                color: #555;
+            }
+        """)
+
+    def browse_ffmpeg(self):
+        filter_str = "可执行文件 (*.exe);;所有文件 (*)" if sys.platform.startswith('win') else "所有文件 (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "选择FFmpeg", "", filter_str)
+        if path:
+            self.ffmpeg_input.setText(path)
+
+    def browse_save_path(self):
+        path = QFileDialog.getExistingDirectory(self, "选择视频保存目录")
+        if path:
+            self.path_input.setText(path)
+
+    def browse_music_save_path(self):
+        """浏览并设置音乐保存路径"""
+        path = QFileDialog.getExistingDirectory(self, "选择音乐保存目录")
+        if path:
+            self.music_path_input.setText(path)
+
+    def browse_image_save_path(self):
+        """浏览并设置图片保存路径"""
+        path = QFileDialog.getExistingDirectory(self, "选择图片保存目录")
+        if path:
+            self.image_path_input.setText(path)
+
+    def start_download(self):
+        url = self.url_input.text().strip()
+        ffmpeg_path = self.ffmpeg_input.text().strip()
+        save_path = self.path_input.text().strip()
+        file_name = self.filename_input.text().strip()
+        selected_format = self.format_combo.currentText().lower()
+        convert_to_mp4 = self.convert_checkbox.isChecked()
+
+        if not url:
+            dialog = CustomDialog("请输入URL", title="输入错误", button_text='知道了', parent=self)
+            dialog.exec()
+            return
+
+        # 根据格式决定保存位置
+        detected_format = self.detect_format(url)
+        format_to_use = selected_format if selected_format != "自动检测" else detected_format
+
+        # 改进的格式检测（新增）
+        if format_to_use == "unknown":
+            # 尝试通过HEAD请求检测内容类型
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
+                }
+                response = requests.head(url, headers=headers, timeout=10)
+                content_type = response.headers.get('content-type', '').lower()
+
+                if 'video' in content_type:
+                    format_to_use = "mp4"
+                elif 'audio' in content_type:
+                    format_to_use = "mp3"
+                elif 'image' in content_type:
+                    format_to_use = "jpg"
+                else:
+                    format_to_use = "unknown"
+            except Exception as e:
+                self.append_log(f"自动检测失败: {str(e)}")
+
+        # 如果用户没有指定保存路径，使用默认的分类保存路径
+        if not save_path:
+            if format_to_use in ["mp3", "wma", "wav", "m4a", "aac", "ogg", "opus", "weba"]:
+                save_path = self.music_path_input.text() or self.MUSIC_OUTPUT_DIR
+            elif format_to_use in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"]:  # 新增图片判断
+                save_path = self.image_path_input.text() or self.IMAGE_OUTPUT_DIR
+            else:
+                save_path = self.path_input.text() or self.VIDEO_OUTPUT_DIR
+
+        # 确保保存目录存在
+        if not os.path.exists(save_path):
+            try:
+                os.makedirs(save_path)
+            except Exception as e:
+                QMessageBox.warning(self, "路径错误", f"无法创建保存目录: {str(e)}")
+                return
+
+        # 检查FFmpeg是否需要
+        if format_to_use in ["m3u8", "hls", "mpd", "m3u", "webm", "ogg", "ogv", "aac", "opus", "weba"]:
+            if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+                auto_ffmpeg = M3U8VideoDownloadThread.find_ffmpeg()
+                if os.path.exists(auto_ffmpeg):
+                    self.ffmpeg_input.setText(auto_ffmpeg)
+                    ffmpeg_path = auto_ffmpeg
+                else:
+                    QMessageBox.warning(self, "配置错误", "处理此格式需要FFmpeg，请设置有效的FFmpeg路径")
+                    return
+
+        self.save_settings()
+
+        # 根据格式选择合适的下载线程（改进）
+        if format_to_use in ["m3u8", "hls", "m3u"]:
+            self.download_thread = M3U8VideoDownloadThread(
+                url=url,
+                save_path=save_path,
+                ffmpeg_path=ffmpeg_path,
+                convert_to_mp4=convert_to_mp4,
+                file_name=file_name
+            )
+        elif format_to_use in ["mpd"]:
+            self.download_thread = AdaptiveVideoDownloadThread(
+                url=url,
+                save_path=save_path,
+                ffmpeg_path=ffmpeg_path,
+                file_name=file_name,
+                format_type="mp4"
+            )
+        elif format_to_use in ["mp3", "wma", "wav", "m4a", "aac", "opus", "weba"]:
+            self.download_thread = AudioVideoDownloadThread(
+                url=url,
+                save_path=save_path,
+                ffmpeg_path=ffmpeg_path,
+                file_name=file_name,
+                expected_ext=format_to_use
+            )
+        elif format_to_use in ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"]:  # 新增图片下载
+            self.download_thread = ImageDownloadThread(
+                url=url,
+                save_path=save_path,
+                file_name=file_name,
+                expected_ext=format_to_use
+            )
+        else:
+            # 默认为直接下载（改进了MP4的处理）
+            self.download_thread = DirectVideoDownloadThread(
+                url=url,
+                save_path=save_path,
+                file_name=file_name,
+                expected_ext=format_to_use
+            )
+
+        # 统一的信号连接和线程启动逻辑
+        self.download_thread.progress_updated.connect(self.update_progress)
+        self.download_thread.message_received.connect(self.append_log)
+        self.download_thread.download_completed.connect(self.download_finished)
+
+        self.download_thread.start()
+        self.download_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+
+    def stop_download(self):
+        """安全停止下载线程"""
+        if self.download_thread and self.download_thread.isRunning():
+            self.append_log("正在停止下载线程...")
+            self.download_thread.stop()
+            # 等待线程结束
+            if not self.download_thread.wait(5000):  # 等待5秒
+                self.append_log("下载线程未能及时停止，强制终止")
+                self.download_thread.terminate()
+                self.download_thread.wait()  # 确保线程已停止
+            self.download_thread = None
+            self.stop_btn.setEnabled(False)
+
+    def disconnect_signals(self):
+        """断开所有线程信号连接"""
+        if self.download_thread:
+            try:
+                self.download_thread.progress_updated.disconnect()
+                self.download_thread.message_received.disconnect()
+                self.download_thread.download_completed.disconnect()
+            except Exception as e:
+                # 忽略已断开的信号
+                pass
+
+    def download_finished(self, success, message):
+        self.append_log(message)
+        self.download_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+
+        if success:
+            self.progress_bar.setFormat("下载完成")
+            QMessageBox.information(self, "成功", message)
+            # 清空输入框，准备下一次下载
+            self.url_input.clear()
+            self.append_log("等待下一次下载...")
+        else:
+            self.progress_bar.setFormat("下载失败")
+            QMessageBox.warning(self, "失败", message)
+
+        self.download_thread = None
+
+    def save_settings(self):
+        """保存设置到配置文件"""
+        settings = QSettings("VideoDownloader", "GeneralSettings")
+        settings.setValue("ffmpeg_path", self.ffmpeg_input.text())
+        settings.setValue("video_save_path", self.path_input.text())
+        settings.setValue("music_save_path", self.music_path_input.text())
+        settings.setValue("image_save_path", self.image_path_input.text())  # 新增图片路径保存
+        settings.setValue("convert_to_mp4", self.convert_checkbox.isChecked())
+        settings.setValue("last_format", self.format_combo.currentText())
+        self.append_log("设置已保存")
+
+    def load_settings(self):
+        """从配置文件加载设置"""
+        settings = QSettings("VideoDownloader", "GeneralSettings")
+        self.ffmpeg_input.setText(settings.value("ffmpeg_path", ""))
+        self.path_input.setText(settings.value("video_save_path", ""))
+        self.music_path_input.setText(settings.value("music_save_path", ""))
+        self.image_path_input.setText(settings.value("image_save_path", ""))
+        convert_to_mp4 = settings.value("convert_to_mp4", True, type=bool)
+        self.convert_checkbox.setChecked(convert_to_mp4)
+
+        last_format = settings.value("last_format", "自动检测")
+        format_index = self.format_combo.findText(last_format)
+        if format_index >= 0:
+            self.format_combo.setCurrentIndex(format_index)
+
+        self.append_log("设置已加载")
+
+    def detect_format(self, url):
+        """尝试从URL检测格式"""
+        url = url.lower()
+        video_formats = ["mp4", "flv", "f4v", "webm", "mov", "mkv", "avi", "wmv", "asf", "divx", "mpeg4",
+                         "ogv"]
+        audio_formats = ["mp3", "wma", "wav", "m4a", "aac", "ogg", "opus", "weba"]
+        image_formats = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "tiff"]
+        stream_formats = ["m3u8", "hls", "m3u", "mpd"]
+
+        # 检查是否是流媒体格式
+        for fmt in stream_formats:
+            if f".{fmt}" in url or f"{fmt}?" in url or f"{fmt}=" in url:
+                return fmt
+
+        # 检查是否是视频格式
+        for fmt in video_formats:
+            if f".{fmt}" in url or f"{fmt}?" in url or f"{fmt}=" in url:
+                return fmt
+
+        # 检查是否是音频格式
+        for fmt in audio_formats:
+            if f".{fmt}" in url or f"{fmt}?" in url or f"{fmt}=" in url:
+                return fmt
+
+        # 检查是否是图片格式
+        for fmt in image_formats:
+            if f".{fmt}" in url or f"{fmt}?" in url or f"{fmt}=" in url:
+                return fmt
+
+        # 检查常见的流媒体服务
+        if "youtube.com" in url or "youtu.be" in url:
+            return "mp4"
+        elif "vimeo.com" in url:
+            return "mp4"
+        elif "dailymotion.com" in url:
+            return "mp4"
+        elif "bilibili.com" in url or "b23.tv" in url:
+            return "flv"
+        elif "tiktok.com" in url or "douyin.com" in url:
+            return "mp4"
+        elif "soundcloud.com" in url:
+            return "mp3"
+        elif "spotify.com" in url:
+            return "mp3"
+        elif "pinterest.com" in url or "imgur.com" in url or "unsplash.com" in url:
+            return "jpg"
+
+        return "unknown"
+
+    def update_progress(self, value):
+        """更新进度条"""
+        self.progress_bar.setValue(value)
+        self.progress_bar.setFormat(f"{value}%")
+
+    def append_log(self , message) :
+        """添加日志信息"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {message}\n"
+        self.log_display.insertPlainText(log_entry)
+        # 自动滚动到底部
+        self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+
+
+
+
+# ===== 音频格式转换工具 =====
+class AudioFormatConverterThread(VideoDownloadThread):
+    """音频格式转换线程 - 用于批量转换音频文件格式"""
+    
+    def __init__(self, folder_path, target_format, ffmpeg_path, overwrite_existing=False):
+        super().__init__()
+        self.folder_path = folder_path
+        self.target_format = target_format.lower()
+        self.ffmpeg_path = ffmpeg_path
+        self.overwrite_existing = overwrite_existing
+        self.supported_formats = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
+        
+    def find_audio_files(self):
+        """查找目录中所有支持的音频文件"""
+        audio_files = []
+        try:
+            for root, dirs, files in os.walk(self.folder_path):
+                for file in files:
+                    # 检查文件扩展名是否在支持的格式列表中
+                    _, ext = os.path.splitext(file)
+                    ext = ext[1:].lower()  # 移除点并转为小写
+                    if ext in self.supported_formats:
+                        # 如果目标格式与当前格式相同，则跳过（除非强制覆盖）
+                        if ext == self.target_format and not self.overwrite_existing:
+                            continue
+                        audio_files.append(os.path.join(root, file))
+        except Exception as e:
+            self.message_received.emit(f"搜索音频文件出错: {str(e)}")
+        
+        return audio_files
+        
+    def convert_file(self, input_path):
+        """使用FFmpeg转换单个音频文件格式"""
+        try:
+            # 获取文件信息
+            file_name = os.path.basename(input_path)
+            file_dir = os.path.dirname(input_path)
+            base_name, _ = os.path.splitext(file_name)
+            
+            # 构建输出文件路径
+            output_path = os.path.join(file_dir, f"{base_name}.{self.target_format}")
+            
+            # 检查输出文件是否已存在
+            counter = 1
+            while os.path.exists(output_path):
+                if self.overwrite_existing:
+                    break
+                output_path = os.path.join(file_dir, f"{base_name}_{counter}.{self.target_format}")
+                counter += 1
+                
+            self.message_received.emit(f"开始转换: {file_name} -> {base_name}.{self.target_format}")
+            
+            # 构建FFmpeg命令
+            cmd = [
+                self.ffmpeg_path,
+                '-y',  # 覆盖现有文件
+                '-i', input_path,  # 输入文件
+                '-vn',  # 禁用视频流
+            ]
+            
+            # 根据目标格式设置不同的编码参数
+            if self.target_format == 'mp3':
+                cmd.extend(['-c:a', 'libmp3lame', '-q:a', '2'])  # MP3高质量设置
+            elif self.target_format == 'wav':
+                cmd.extend(['-c:a', 'pcm_s16le', '-ar', '44100'])  # WAV无损格式
+            elif self.target_format == 'm4a':
+                cmd.extend(['-c:a', 'aac', '-b:a', '256k'])  # AAC高质量设置
+            elif self.target_format in ['ogg', 'opus']:
+                cmd.extend(['-c:a', 'libopus', '-b:a', '192k'])  # Opus高质量设置
+            elif self.target_format == 'flac':
+                cmd.extend(['-c:a', 'flac', '-compression_level', '8'])  # FLAC无损压缩
+            else:
+                cmd.extend(['-c:a', 'copy'])  # 对于其他支持的格式，直接复制音频流
+            
+            # 添加输出路径
+            cmd.append(output_path)
+            
+            # 执行FFmpeg命令
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True
+            )
+            
+            # 捕获FFmpeg输出
+            error_output = []
+            for line in process.stdout:
+                if self.stop_requested:
+                    process.terminate()
+                    return False, "转换已取消"
+                # 收集错误信息
+                if 'error' in line.lower() or 'failed' in line.lower():
+                    error_output.append(line.strip())
+            
+            process.wait()
+            
+            if process.returncode == 0:
+                self.message_received.emit(f"转换成功: {file_name} -> {base_name}.{self.target_format}")
+                return True, output_path
+            else:
+                error_msg = "\n".join(error_output) if error_output else "未知错误"
+                self.message_received.emit(f"转换失败: {file_name}\n错误: {error_msg}")
+                return False, error_msg
+                
+        except Exception as e:
+            error_msg = f"处理文件时出错: {str(e)}"
+            self.message_received.emit(error_msg)
+            return False, error_msg
+    
+    def run(self):
+        """线程主执行函数"""
+        try:
+            self.message_received.emit(f"开始扫描目录: {self.folder_path}")
+            
+            # 查找音频文件
+            audio_files = self.find_audio_files()
+            total_files = len(audio_files)
+            
+            if total_files == 0:
+                self.message_received.emit(f"未找到需要转换的音频文件")
+                self.progress_updated.emit(100)
+                self.download_completed.emit(True, "扫描完成，没有需要转换的文件")
+                return
+            
+            self.message_received.emit(f"找到 {total_files} 个需要转换的音频文件")
+            
+            # 显示需要转换的文件列表
+            self.message_received.emit("需要转换的文件列表:")
+            for file_path in audio_files:
+                file_name = os.path.basename(file_path)
+                self.message_received.emit(f"- {file_name}")
+            
+            # 开始转换文件
+            success_count = 0
+            fail_count = 0
+            
+            for i, file_path in enumerate(audio_files):
+                if self.stop_requested:
+                    self.download_completed.emit(False, "转换操作已取消")
+                    return
+                
+                # 转换单个文件
+                success, result = self.convert_file(file_path)
+                
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+                
+                # 更新进度
+                progress = int(((i + 1) / total_files) * 100)
+                self.progress_updated.emit(progress)
+            
+            # 完成转换
+            self.progress_updated.emit(100)
+            self.download_completed.emit(True, f"转换完成！成功: {success_count} 个, 失败: {fail_count} 个")
+            
+        except Exception as e:
+            self.download_completed.emit(False, f"转换过程出错: {str(e)}")
+
+
+# ===== 音频格式转换器窗口 =====
+class AudioFormatConverterWindow(QWidget):
+    """音频格式转换器主窗口"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.init_ui()
+        self.convert_thread = None  # 初始化转换线程变量
+        # 设置窗口位置在上一个窗口的左上角
+        if parent and parent.isVisible():
+            parent_pos = parent.pos()
+            self.move(parent_pos)
+    
+    def init_ui(self):
+        """初始化界面"""
+        self.setWindowTitle("音频格式转换工具")
+        self.setMinimumSize(600, 500)
+        
+        # 主布局
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+        
+        # 设置区域
+        settings_group = QGroupBox("转换设置")
+        settings_layout = QFormLayout()
+        settings_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        settings_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        settings_layout.setSpacing(10)
+        
+        # 选择文件夹
+        folder_layout = QHBoxLayout()
+        self.folder_input = QLineEdit()
+        self.folder_input.setPlaceholderText("请选择包含音频文件的文件夹")
+        folder_browse_btn = QPushButton("浏览...")
+        folder_browse_btn.clicked.connect(self.browse_folder)
+        folder_layout.addWidget(self.folder_input)
+        folder_layout.addWidget(folder_browse_btn)
+        settings_layout.addRow("文件夹路径:", folder_layout)
+        
+        # 目标格式选择
+        format_layout = QHBoxLayout()
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["MP3", "WAV", "M4A", "OGG", "FLAC", "OPUS"])
+        self.format_combo.setCurrentIndex(0)  # 默认MP3格式
+        format_layout.addWidget(self.format_combo)
+        format_layout.addStretch()
+        settings_layout.addRow("目标格式:", format_layout)
+        
+        # FFmpeg路径
+        ffmpeg_layout = QHBoxLayout()
+        self.ffmpeg_input = QLineEdit()
+        ffmpeg_browse_btn = QPushButton("浏览...")
+        ffmpeg_browse_btn.clicked.connect(self.browse_ffmpeg)
+        ffmpeg_layout.addWidget(self.ffmpeg_input)
+        ffmpeg_layout.addWidget(ffmpeg_browse_btn)
+        settings_layout.addRow("FFmpeg路径:", ffmpeg_layout)
+        
+        # 覆盖选项
+        self.overwrite_checkbox = QCheckBox("覆盖已存在的文件")
+        settings_layout.addRow("覆盖设置:", self.overwrite_checkbox)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        self.scan_btn = QPushButton("扫描文件")
+        self.scan_btn.clicked.connect(self.scan_files)
+        self.convert_btn = QPushButton("开始转换")
+        self.convert_btn.clicked.connect(self.start_conversion)
+        self.convert_btn.setEnabled(False)  # 初始禁用
+        self.stop_btn = QPushButton("停止转换")
+        self.stop_btn.clicked.connect(self.stop_conversion)
+        self.stop_btn.setEnabled(False)  # 初始禁用
+        
+        btn_layout.addWidget(self.scan_btn)
+        btn_layout.addWidget(self.convert_btn)
+        btn_layout.addWidget(self.stop_btn)
+        settings_layout.addRow("", btn_layout)
+        
+        settings_group.setLayout(settings_layout)
+        main_layout.addWidget(settings_group)
+        
+        # 公共日志和进度区域
+        progress_layout = QVBoxLayout()
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("准备就绪")
+        progress_layout.addWidget(self.progress_bar)
+        
+        log_group = QGroupBox("转换日志")
+        log_layout = QVBoxLayout()
+        self.log_display = QTextEdit()
+        self.log_display.setReadOnly(True)
+        font = QFont()
+        font.setPointSize(9)
+        self.log_display.setFont(font)
+        log_layout.addWidget(self.log_display)
+        log_group.setLayout(log_layout)
+        progress_layout.addWidget(log_group)
+        
+        main_layout.addLayout(progress_layout)
+        
+        self.setLayout(main_layout)
+        self.setup_styles()
+    
+    def setup_styles(self):
+        """设置界面样式，使用与视频下载器相似的风格"""
+        self.setStyleSheet("""
+            QWidget {
+                font-family: "Microsoft YaHei", sans-serif;
+                font-size: 14px;
+            }
+            QGroupBox {
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding: 15px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                font-weight: bold;
+                color: #333;
+            }
+            QLineEdit {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+            }
+            QLineEdit:focus {
+                border-color: #2196F3;
+            }
+            QPushButton {
+                background-color: #009688;
+                color: white;
+                padding: 6px 12px;
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #00796B;
+            }
+            QPushButton:pressed {
+                background-color: #00796B;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+            QProgressBar {
+                height: 24px;
+                border-radius: 4px;
+                text-align: center;
+                border: 1px solid #ccc;
+            }
+            QProgressBar::chunk {
+                background-color: #009688;
+                border-radius: 2px;
+            }
+            QTextEdit {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QCheckBox {
+                spacing: 5px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QComboBox {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+                min-width: 120px;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 25px;
+                border-left: 1px solid #ccc;
+                border-radius: 0 4px 4px 0;
+            }
+        """)
+    
+    def browse_folder(self):
+        """浏览并设置文件夹路径"""
+        path = QFileDialog.getExistingDirectory(self, "选择音频文件文件夹")
+        if path:
+            self.folder_input.setText(path)
+            # 选择文件夹后启用扫描按钮
+            self.scan_btn.setEnabled(True)
+    
+    def browse_ffmpeg(self):
+        """浏览并设置FFmpeg路径"""
+        filter_str = "可执行文件 (*.exe);;所有文件 (*)" if sys.platform.startswith('win') else "所有文件 (*)"
+        path, _ = QFileDialog.getOpenFileName(self, "选择FFmpeg", "", filter_str)
+        if path:
+            self.ffmpeg_input.setText(path)
+    
+    def scan_files(self):
+        """扫描文件夹中的音频文件"""
+        folder_path = self.folder_input.text().strip()
+        target_format = self.format_combo.currentText().lower()
+        
+        if not folder_path or not os.path.exists(folder_path):
+            QMessageBox.warning(self, "路径错误", "请选择有效的文件夹路径")
+            return
+        
+        self.append_log(f"开始扫描目录: {folder_path}")
+        
+        # 查找音频文件
+        supported_formats = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
+        audio_files = []
+        
+        try:
+            for root, dirs, files in os.walk(folder_path):
+                for file in files:
+                    _, ext = os.path.splitext(file)
+                    ext = ext[1:].lower()
+                    if ext in supported_formats and ext != target_format:
+                        audio_files.append(os.path.join(root, file))
+        except Exception as e:
+            self.append_log(f"扫描文件出错: {str(e)}")
+            return
+        
+        # 显示扫描结果
+        total_files = len(audio_files)
+        self.append_log(f"扫描完成，找到 {total_files} 个需要转换的音频文件")
+        
+        if total_files > 0:
+            self.append_log("需要转换的文件列表:")
+            for file_path in audio_files:
+                file_name = os.path.basename(file_path)
+                self.append_log(f"- {file_name}")
+            
+            # 启用转换按钮
+            self.convert_btn.setEnabled(True)
+        else:
+            self.append_log("没有找到需要转换的音频文件")
+            self.convert_btn.setEnabled(False)
+    
+    def start_conversion(self):
+        """开始音频格式转换"""
+        folder_path = self.folder_input.text().strip()
+        ffmpeg_path = self.ffmpeg_input.text().strip()
+        target_format = self.format_combo.currentText().lower()
+        overwrite_existing = self.overwrite_checkbox.isChecked()
+        
+        # 验证输入
+        if not folder_path or not os.path.exists(folder_path):
+            QMessageBox.warning(self, "路径错误", "请选择有效的文件夹路径")
+            return
+        
+        # 检查FFmpeg
+        if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+            # 尝试自动查找FFmpeg
+            auto_ffmpeg = M3U8VideoDownloadThread.find_ffmpeg()
+            if os.path.exists(auto_ffmpeg):
+                self.ffmpeg_input.setText(auto_ffmpeg)
+                ffmpeg_path = auto_ffmpeg
+            else:
+                QMessageBox.warning(self, "配置错误", "处理音频格式需要FFmpeg，请设置有效的FFmpeg路径")
+                return
+        
+        # 创建转换线程
+        self.convert_thread = AudioFormatConverterThread(
+            folder_path=folder_path,
+            target_format=target_format,
+            ffmpeg_path=ffmpeg_path,
+            overwrite_existing=overwrite_existing
+        )
+        
+        # 连接信号
+        self.convert_thread.progress_updated.connect(self.update_progress)
+        self.convert_thread.message_received.connect(self.append_log)
+        self.convert_thread.download_completed.connect(self.conversion_finished)
+        
+        # 启动线程
+        self.convert_thread.start()
+        self.scan_btn.setEnabled(False)
+        self.convert_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+    
+    def stop_conversion(self):
+        """停止转换过程"""
+        if self.convert_thread and self.convert_thread.isRunning():
+            self.append_log("正在停止转换线程...")
+            self.convert_thread.stop()
+            # 等待线程结束
+            if not self.convert_thread.wait(5000):
+                self.append_log("转换线程未能及时停止，强制终止")
+                self.convert_thread.terminate()
+                self.convert_thread.wait()
+            self.convert_thread = None
+            self.scan_btn.setEnabled(True)
+            self.convert_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+    
+    def update_progress(self, value):
+        """更新进度条"""
+        self.progress_bar.setValue(value)
+        self.progress_bar.setFormat(f"{value}%")
+    
+    def append_log(self, message):
+        """添加日志信息"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {message}\n"
+        self.log_display.insertPlainText(log_entry)
+        # 自动滚动到底部
+        self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+    
+    def conversion_finished(self, success, message):
+        """转换完成后的处理"""
+        self.append_log(message)
+        self.scan_btn.setEnabled(True)
+        self.convert_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        
+        if success:
+            self.progress_bar.setFormat("转换完成")
+            QMessageBox.information(self, "成功", message)
+        else:
+            self.progress_bar.setFormat("转换失败")
+            QMessageBox.warning(self, "失败", message)
+        
+        self.convert_thread = None
+    
+    def disconnect_signals(self):
+        """断开所有线程信号连接"""
+        if self.convert_thread:
+            try:
+                self.convert_thread.progress_updated.disconnect()
+                self.convert_thread.message_received.disconnect()
+                self.convert_thread.download_completed.disconnect()
+            except Exception:
+                # 忽略已断开的信号
+                pass
+    
+    def closeEvent(self, event):
+        """窗口关闭事件处理"""
+        self.stop_conversion()
+        self.disconnect_signals()
+        # 将窗口添加到父窗口的子窗口列表中进行管理
+        if self.parent and hasattr(self.parent, 'child_windows'):
+            if self in self.parent.child_windows:
+                self.parent.child_windows.remove(self)
+        event.accept()
+
+
+# ===== 应用程序设置对话框 =====
 class SettingsDialog(QDialog):
     """
     应用程序设置对话框
@@ -5034,15 +7340,8 @@ class SettingsDialog(QDialog):
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.parent = parent
         self.setWindowTitle("应用设置")
         self.setMinimumSize(400, 300)
-        self.init_ui()
-        self.load_settings()
-        self.setup_styles()
-        
-    def init_ui(self):
-        """初始化用户界面"""
         main_layout = QVBoxLayout(self)
         
         # 创建设置分组
@@ -5094,8 +7393,13 @@ class SettingsDialog(QDialog):
         
         main_layout.addLayout(button_layout)
         
+        # 加载设置
+        self.load_settings()
+        # 设置样式
+        self.setup_styles()
+        
     def setup_styles(self):
-        """设置对话框样式"""
+        """设置对话框样式，使其与日志查看器风格一致"""
         self.setStyleSheet("""
             QDialog {
                 background-color: #f0f0f0;
@@ -5103,6 +7407,17 @@ class SettingsDialog(QDialog):
             QGroupBox {
                 font-weight: bold;
                 margin-top: 10px;
+                background-color: #ffffff;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 10px;
+            }
+            QComboBox {
+                background-color: #ffffff;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 4px;
+                min-width: 100px;
             }
             QPushButton {
                 background-color: #4CAF50;
@@ -5118,35 +7433,65 @@ class SettingsDialog(QDialog):
         """)
         
     def load_settings(self):
-        """加载保存的设置"""
+        """加载保存的设置，确保从infor文件夹读取"""
         try:
+            # 确保infor文件夹存在
+            if not os.path.exists(CONFIG_DIR):
+                try:
+                    os.makedirs(CONFIG_DIR)
+                except Exception as e:
+                    print(f"创建配置目录失败: {e}")
+                    # 使用默认设置
+                    self._apply_default_settings()
+                    return
+            
             # 尝试加载设置
-                if os.path.exists(APP_SETTINGS_FILE):
+            if os.path.exists(APP_SETTINGS_FILE):
+                try:
                     with open(APP_SETTINGS_FILE, 'rb') as f:
                         settings = pickle.load(f)
+                except Exception as e:
+                    print(f"加载设置文件失败: {e}")
+                    settings = {}
+            else:
+                settings = {}
 
-                    
-                # 应用设置
-                self.show_welcome_check.setCurrentIndex(0 if settings.get('show_welcome', True) else 1)
-                self.auto_save_check.setCurrentIndex(0 if settings.get('auto_save', True) else 1)
-                self.minimize_to_tray_check.setCurrentIndex(0 if settings.get('minimize_to_tray', True) else 1)
-                
-                # 设置日志级别
-                log_level = settings.get('log_level', 'INFO')
-                index = self.log_level_combo.findText(log_level)
-                if index >= 0:
-                    self.log_level_combo.setCurrentIndex(index)
+            
+            # 应用设置
+            self.show_welcome_check.setCurrentIndex(0 if settings.get('show_welcome', True) else 1)
+            self.auto_save_check.setCurrentIndex(0 if settings.get('auto_save', True) else 1)
+            self.minimize_to_tray_check.setCurrentIndex(0 if settings.get('minimize_to_tray', True) else 1)
+            
+            # 设置日志级别
+            log_level = settings.get('log_level', 'INFO')
+            index = self.log_level_combo.findText(log_level)
+            if index >= 0:
+                self.log_level_combo.setCurrentIndex(index)
         except Exception as e:
             print(f"加载设置失败: {e}")
             # 使用默认设置
-            self.show_welcome_check.setCurrentIndex(0)
-            self.auto_save_check.setCurrentIndex(0)
-            self.minimize_to_tray_check.setCurrentIndex(0)  # 默认允许最小化到托盘
-            self.log_level_combo.setCurrentIndex(1)  # INFO级别
+            self._apply_default_settings()
+            
+    def _apply_default_settings(self):
+        """应用默认设置"""
+        self.show_welcome_check.setCurrentIndex(0)
+        self.auto_save_check.setCurrentIndex(0)
+        self.minimize_to_tray_check.setCurrentIndex(0)  # 默认允许最小化到托盘
+        self.log_level_combo.setCurrentIndex(1)  # INFO级别
             
     def save_settings(self):
-        """保存设置"""
+        """保存设置，确保保存到infor文件夹"""
         try:
+            # 确保infor文件夹存在
+            if not os.path.exists(CONFIG_DIR):
+                try:
+                    os.makedirs(CONFIG_DIR)
+                    print(f"创建配置目录: {CONFIG_DIR}")
+                except Exception as e:
+                    print(f"创建配置目录失败: {e}")
+                    QMessageBox.critical(self, "错误", f"无法创建配置目录: {str(e)}")
+                    return
+            
             # 收集设置
             settings = {
                 'show_welcome': self.show_welcome_check.currentText() == '是',
@@ -5162,6 +7507,9 @@ class SettingsDialog(QDialog):
             # 应用日志级别设置
             log_level = getattr(logging, settings['log_level'])
             logger.setLevel(log_level)
+            # 确保根日志记录器也应用相同的日志级别
+            root_logger = logging.getLogger()
+            root_logger.setLevel(log_level)
             
             # 显示保存成功消息
             QMessageBox.information(self, "成功", "设置已保存")
@@ -5172,11 +7520,10 @@ class SettingsDialog(QDialog):
             print(f"保存设置失败: {e}")
             QMessageBox.critical(self, "错误", f"保存设置失败: {str(e)}")
 
-class LogViewer(QDialog):
-    """
-    日志查看器对话框
-    用于查看应用程序的日志信息
-    """
+
+# ===== 日志查看器对话框类，用于显示应用日志 =====
+class LogViewerDialog(QDialog):
+    """日志查看器对话框类，用于显示应用日志"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("日志查看器")
@@ -5246,23 +7593,13 @@ class LogViewer(QDialog):
         """)
         
     def load_logs(self):
-        """加载日志文件"""
+        """加载日志文件，支持解密加密的日志"""
         try:
             # 检查日志文件是否存在
             if os.path.exists(APP_LOG_FILE):
-                # 尝试使用不同的编码方式读取日志文件
-                encodings = ['utf-8', 'gbk', 'latin-1']
-                log_content = ""
-                for encoding in encodings:
-                    try:
-                        with open(APP_LOG_FILE, 'r', encoding=encoding) as f:
-                            log_content = f.read()
-                        # 如果成功读取，记录使用的编码方式
-                        print(f"成功使用{encoding}编码读取日志文件")
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                        
+                # 使用加密工具读取和解密日志文件
+                log_content = read_encrypted_logs(APP_LOG_FILE)
+                         
                 # 显示日志内容
                 self.log_text.setPlainText(log_content)
                 # 滚动到底部
@@ -5298,6 +7635,8 @@ class LogViewer(QDialog):
             print(f"清空日志失败: {e}")
             QMessageBox.critical(self, "错误", f"清空日志失败: {str(e)}")
 
+
+# ===== 版本历史对话框 =====
 class VersionHistoryDialog(QDialog):
     """
     版本历史对话框
@@ -5380,6 +7719,8 @@ class VersionHistoryDialog(QDialog):
         
         # 设置内容
         self.history_text.setPlainText(''.join(history_content))
+
+
 
 # ===== 主程序入口 =====
 if __name__ == '__main__':
