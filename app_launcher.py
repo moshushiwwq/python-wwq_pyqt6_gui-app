@@ -868,6 +868,41 @@ class AppLauncher(QMainWindow):
             self._reset_button_style(self.video_downloader_button, "#9C27B0")
             # 记录错误日志
             self.log_action(error_msg, "error")
+    
+    def run_audio_converter(self):
+        """运行音频格式转换工具，保留主窗口并显示进度条"""
+        self._button_clicked_feedback(self.audio_converter_button)
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动音频格式转换工具")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建音频格式转换工具窗口，保留主窗口可见
+            self.audio_window = AudioFormatConverterWindow()
+            self.child_windows.append(self.audio_window)
+            
+            # 设置窗口关闭事件
+            self.audio_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示音频格式转换工具窗口
+            self.audio_window.show()
+            
+            # 记录操作日志
+            self.log_action("启动音频格式转换工具")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行音频格式转换工具: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            self._reset_button_style(self.audio_converter_button, "#009688")
+            # 记录错误日志
+            self.log_action(error_msg, "error")
         
     def run_dino_game(self):
         """运行小恐龙游戏，保留主窗口并显示进度条"""
@@ -6814,6 +6849,112 @@ class VideoDownloaderWindow(QWidget):
 
 
 
+# ===== 重复文件查找线程 - 用于识别内容相同的文件 =====
+class DuplicateFileFinderThread(QThread):
+    """重复文件查找线程 - 通过计算文件哈希值来识别内容相同的文件"""
+    
+    import hashlib  # 在类内部导入hashlib以确保线程环境中可用
+    
+    progress_updated = pyqtSignal(int)
+    message_received = pyqtSignal(str)
+    duplicates_found = pyqtSignal(list)
+    search_completed = pyqtSignal(bool, str)
+    
+    def __init__(self, folder_path, supported_formats=None):
+        super().__init__()
+        self.folder_path = folder_path
+        self.supported_formats = supported_formats or ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
+        self.stop_requested = False
+        self.file_hashes = {}  # 用于存储文件哈希值和对应的文件路径列表
+    
+    def stop(self):
+        """停止查找线程"""
+        self.stop_requested = True
+    
+    def calculate_file_hash(self, file_path, block_size=65536):
+        """计算文件的MD5哈希值，用于识别重复文件"""
+        try:
+            hasher = hashlib.md5()
+            with open(file_path, 'rb') as file:
+                buf = file.read(block_size)
+                while buf and not self.stop_requested:
+                    hasher.update(buf)
+                    buf = file.read(block_size)
+            if self.stop_requested:
+                return None
+            return hasher.hexdigest()
+        except Exception as e:
+            self.message_received.emit(f"计算文件哈希时出错: {str(e)}")
+            return None
+    
+    def run(self):
+        """线程主执行函数"""
+        try:
+            # 确保中文目录路径正确显示
+            try:
+                self.message_received.emit(f"开始查找重复文件: {self.folder_path}")
+            except UnicodeEncodeError:
+                self.message_received.emit(f"开始查找重复文件: [路径包含特殊字符]")
+            
+            # 查找所有支持的音频文件
+            audio_files = []
+            try:
+                for root, dirs, files in os.walk(self.folder_path):
+                    if self.stop_requested:
+                        self.search_completed.emit(False, "查找已取消")
+                        return
+                    
+                    for file in files:
+                        _, ext = os.path.splitext(file)
+                        ext = ext[1:].lower()
+                        if ext in self.supported_formats:
+                            audio_files.append(os.path.normpath(os.path.join(root, file)))
+            except Exception as e:
+                self.message_received.emit(f"搜索音频文件出错: {str(e)}")
+                self.search_completed.emit(False, f"搜索文件失败: {str(e)}")
+                return
+            
+            total_files = len(audio_files)
+            if total_files == 0:
+                self.search_completed.emit(True, "未找到音频文件")
+                return
+            
+            self.message_received.emit(f"找到 {total_files} 个音频文件，开始计算哈希值...")
+            
+            # 计算每个文件的哈希值并查找重复
+            for i, file_path in enumerate(audio_files):
+                if self.stop_requested:
+                    self.search_completed.emit(False, "查找已取消")
+                    return
+                
+                # 计算文件哈希值
+                file_hash = self.calculate_file_hash(file_path)
+                if file_hash:
+                    # 记录哈希值和对应的文件路径
+                    if file_hash in self.file_hashes:
+                        self.file_hashes[file_hash].append(file_path)
+                    else:
+                        self.file_hashes[file_hash] = [file_path]
+                
+                # 更新进度
+                progress = int(((i + 1) / total_files) * 100)
+                self.progress_updated.emit(progress)
+            
+            # 筛选出重复的文件组（包含多个文件的哈希组）
+            duplicate_groups = [files for files in self.file_hashes.values() if len(files) > 1]
+            
+            # 发送重复文件列表
+            self.duplicates_found.emit(duplicate_groups)
+            
+            # 完成查找
+            if duplicate_groups:
+                total_duplicates = sum(len(group) for group in duplicate_groups)
+                self.search_completed.emit(True, f"查找完成，找到 {len(duplicate_groups)} 组重复文件，共 {total_duplicates} 个重复文件")
+            else:
+                self.search_completed.emit(True, "查找完成，未发现重复文件")
+        except Exception as e:
+            self.search_completed.emit(False, f"查找过程中出错: {str(e)}")
+
 # ===== 音频格式转换工具 =====
 class AudioFormatConverterThread(VideoDownloadThread):
     """音频格式转换线程 - 用于批量转换音频文件格式"""
@@ -6848,30 +6989,42 @@ class AudioFormatConverterThread(VideoDownloadThread):
     def convert_file(self, input_path):
         """使用FFmpeg转换单个音频文件格式"""
         try:
+            # 确保输入路径使用Windows兼容的路径分隔符
+            input_path = os.path.normpath(input_path)
+            
             # 获取文件信息
             file_name = os.path.basename(input_path)
             file_dir = os.path.dirname(input_path)
             base_name, _ = os.path.splitext(file_name)
             
             # 构建输出文件路径
-            output_path = os.path.join(file_dir, f"{base_name}.{self.target_format}")
+            output_path = os.path.normpath(os.path.join(file_dir, f"{base_name}.{self.target_format}"))
             
             # 检查输出文件是否已存在
             counter = 1
             while os.path.exists(output_path):
                 if self.overwrite_existing:
                     break
-                output_path = os.path.join(file_dir, f"{base_name}_{counter}.{self.target_format}")
+                output_path = os.path.normpath(os.path.join(file_dir, f"{base_name}_{counter}.{self.target_format}"))
                 counter += 1
                 
-            self.message_received.emit(f"开始转换: {file_name} -> {base_name}.{self.target_format}")
+            # 确保中文文件名正确显示
+            try:
+                display_file_name = file_name
+                display_output_name = f"{base_name}.{self.target_format}"
+                self.message_received.emit(f"开始转换: {display_file_name} -> {display_output_name}")
+            except UnicodeEncodeError:
+                # 如果文件名包含无法编码的字符，则使用安全的显示方式
+                self.message_received.emit(f"开始转换: [文件路径包含特殊字符] -> [{base_name}.{self.target_format}]")
             
-            # 构建FFmpeg命令
+            # 构建FFmpeg命令 - 注意在Windows中处理中文路径的特殊处理
             cmd = [
                 self.ffmpeg_path,
                 '-y',  # 覆盖现有文件
-                '-i', input_path,  # 输入文件
+                '-i', input_path,
                 '-vn',  # 禁用视频流
+                # 添加编码相关参数以确保中文支持
+                '-hide_banner'
             ]
             
             # 根据目标格式设置不同的编码参数
@@ -6891,43 +7044,75 @@ class AudioFormatConverterThread(VideoDownloadThread):
             # 添加输出路径
             cmd.append(output_path)
             
-            # 执行FFmpeg命令
+            # 执行FFmpeg命令 - 修改为二进制模式处理，避免编码问题
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                universal_newlines=True
+                shell=False  # 在Windows上不使用shell
             )
             
-            # 捕获FFmpeg输出
+            # 捕获FFmpeg输出（二进制模式）
             error_output = []
-            for line in process.stdout:
-                if self.stop_requested:
-                    process.terminate()
-                    return False, "转换已取消"
-                # 收集错误信息
-                if 'error' in line.lower() or 'failed' in line.lower():
-                    error_output.append(line.strip())
+            try:
+                while True:
+                    if self.stop_requested:
+                        process.terminate()
+                        return False, "转换已取消"
+                    
+                    line = process.stdout.readline()
+                    if not line:
+                        break
+                    
+                    # 尝试解码输出，使用不同的编码
+                    try:
+                        line_str = line.decode('utf-8')
+                    except UnicodeDecodeError:
+                        try:
+                            line_str = line.decode('cp936')  # Windows中文编码
+                        except UnicodeDecodeError:
+                            line_str = line.decode('latin-1')  # 最后的后备方案
+                    
+                    # 收集错误信息
+                    if 'error' in line_str.lower() or 'failed' in line_str.lower():
+                        error_output.append(line_str.strip())
+            except Exception as e:
+                # 忽略输出读取过程中的错误，继续执行
+                pass
             
             process.wait()
             
             if process.returncode == 0:
-                self.message_received.emit(f"转换成功: {file_name} -> {base_name}.{self.target_format}")
+                try:
+                    self.message_received.emit(f"转换成功: {display_file_name} -> {display_output_name}")
+                except UnicodeEncodeError:
+                    self.message_received.emit(f"转换成功: [文件路径包含特殊字符]")
                 return True, output_path
             else:
                 error_msg = "\n".join(error_output) if error_output else "未知错误"
-                self.message_received.emit(f"转换失败: {file_name}\n错误: {error_msg}")
+                try:
+                    self.message_received.emit(f"转换失败: {display_file_name}\n错误: {error_msg}")
+                except UnicodeEncodeError:
+                    self.message_received.emit(f"转换失败: [文件路径包含特殊字符]\n错误: {error_msg}")
                 return False, error_msg
                 
         except Exception as e:
-            error_msg = f"处理文件时出错: {str(e)}"
-            self.message_received.emit(error_msg)
-            return False, error_msg
+            # 捕获并处理所有异常，特别是编码相关的异常
+            try:
+                error_msg = f"处理文件时出错: {str(e)}"
+                self.message_received.emit(error_msg)
+            except UnicodeEncodeError:
+                self.message_received.emit(f"处理文件时出错: 文件名或路径包含特殊字符")
+            return False, str(e)
     
     def run(self):
         """线程主执行函数"""
         try:
-            self.message_received.emit(f"开始扫描目录: {self.folder_path}")
+            # 确保中文目录路径正确显示
+            try:
+                self.message_received.emit(f"开始扫描目录: {self.folder_path}")
+            except UnicodeEncodeError:
+                self.message_received.emit(f"开始扫描目录: [路径包含特殊字符]")
             
             # 查找音频文件
             audio_files = self.find_audio_files()
@@ -6941,11 +7126,15 @@ class AudioFormatConverterThread(VideoDownloadThread):
             
             self.message_received.emit(f"找到 {total_files} 个需要转换的音频文件")
             
-            # 显示需要转换的文件列表
+            # 显示需要转换的文件列表 - 添加中文文件名的编码处理
             self.message_received.emit("需要转换的文件列表:")
             for file_path in audio_files:
-                file_name = os.path.basename(file_path)
-                self.message_received.emit(f"- {file_name}")
+                try:
+                    file_name = os.path.basename(file_path)
+                    self.message_received.emit(f"- {file_name}")
+                except UnicodeEncodeError:
+                    # 如果文件名包含无法编码的字符，则使用安全的显示方式
+                    self.message_received.emit(f"- [文件名包含特殊字符]")
             
             # 开始转换文件
             success_count = 0
@@ -6956,7 +7145,8 @@ class AudioFormatConverterThread(VideoDownloadThread):
                     self.download_completed.emit(False, "转换操作已取消")
                     return
                 
-                # 转换单个文件
+                # 转换单个文件 - 确保文件路径使用Windows兼容的路径分隔符
+                file_path = os.path.normpath(file_path)
                 success, result = self.convert_file(file_path)
                 
                 if success:
@@ -6968,15 +7158,25 @@ class AudioFormatConverterThread(VideoDownloadThread):
                 progress = int(((i + 1) / total_files) * 100)
                 self.progress_updated.emit(progress)
             
-            # 完成转换
-            self.progress_updated.emit(100)
-            self.download_completed.emit(True, f"转换完成！成功: {success_count} 个, 失败: {fail_count} 个")
+            # 完成转换 - 添加异常处理
+            try:
+                self.progress_updated.emit(100)
+                self.download_completed.emit(True, f"转换完成！成功: {success_count} 个, 失败: {fail_count} 个")
+            except UnicodeEncodeError:
+                self.download_completed.emit(True, f"转换完成！成功: {success_count} 个, 失败: {fail_count} 个")
             
         except Exception as e:
-            self.download_completed.emit(False, f"转换过程出错: {str(e)}")
+            # 捕获并处理所有异常，特别是编码相关的异常
+            try:
+                self.download_completed.emit(False, f"转换过程出错: {str(e)}")
+            except UnicodeEncodeError:
+                self.download_completed.emit(False, "转换过程出错: 编码相关错误")
 
 
 # ===== 音频格式转换器窗口 =====
+# 音频格式转换器设置文件路径
+AUDIO_CONVERTER_SETTINGS_FILE = os.path.join(CONFIG_DIR, 'audio_converter_settings.pkl')
+
 class AudioFormatConverterWindow(QWidget):
     """音频格式转换器主窗口"""
     
@@ -6990,6 +7190,8 @@ class AudioFormatConverterWindow(QWidget):
         if parent and parent.isVisible():
             parent_pos = parent.pos()
             self.move(parent_pos)
+        # 加载保存的设置
+        self.load_settings()
     
     def init_ui(self):
         """初始化界面"""
@@ -7050,10 +7252,13 @@ class AudioFormatConverterWindow(QWidget):
         self.stop_btn = QPushButton("停止转换")
         self.stop_btn.clicked.connect(self.stop_conversion)
         self.stop_btn.setEnabled(False)  # 初始禁用
+        self.find_duplicates_btn = QPushButton("查找重复文件")
+        self.find_duplicates_btn.clicked.connect(self.find_duplicate_files)
         
         btn_layout.addWidget(self.scan_btn)
         btn_layout.addWidget(self.convert_btn)
         btn_layout.addWidget(self.stop_btn)
+        btn_layout.addWidget(self.find_duplicates_btn)
         settings_layout.addRow("", btn_layout)
         
         settings_group.setLayout(settings_layout)
@@ -7191,21 +7396,35 @@ class AudioFormatConverterWindow(QWidget):
             QMessageBox.warning(self, "路径错误", "请选择有效的文件夹路径")
             return
         
-        self.append_log(f"开始扫描目录: {folder_path}")
+        # 确保中文路径正确显示
+        try:
+            self.append_log(f"开始扫描目录: {folder_path}")
+        except UnicodeEncodeError:
+            self.append_log(f"开始扫描目录: [路径包含特殊字符]")
         
-        # 查找音频文件
+        # 查找音频文件 - 标准化路径以处理Windows路径分隔符
+        folder_path = os.path.normpath(folder_path)
         supported_formats = ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'opus', 'weba', 'flac', 'alac', 'wma']
         audio_files = []
         
         try:
             for root, dirs, files in os.walk(folder_path):
                 for file in files:
-                    _, ext = os.path.splitext(file)
-                    ext = ext[1:].lower()
-                    if ext in supported_formats and ext != target_format:
-                        audio_files.append(os.path.join(root, file))
+                    try:
+                        _, ext = os.path.splitext(file)
+                        ext = ext[1:].lower()
+                        if ext in supported_formats and ext != target_format:
+                            # 确保添加的文件路径使用正确的路径分隔符
+                            file_path = os.path.normpath(os.path.join(root, file))
+                            audio_files.append(file_path)
+                    except UnicodeEncodeError:
+                        # 忽略无法处理的文件名
+                        continue
         except Exception as e:
-            self.append_log(f"扫描文件出错: {str(e)}")
+            try:
+                self.append_log(f"扫描文件出错: {str(e)}")
+            except UnicodeEncodeError:
+                self.append_log("扫描文件出错: 路径包含特殊字符")
             return
         
         # 显示扫描结果
@@ -7215,14 +7434,205 @@ class AudioFormatConverterWindow(QWidget):
         if total_files > 0:
             self.append_log("需要转换的文件列表:")
             for file_path in audio_files:
-                file_name = os.path.basename(file_path)
-                self.append_log(f"- {file_name}")
+                try:
+                    file_name = os.path.basename(file_path)
+                    self.append_log(f"- {file_name}")
+                except UnicodeEncodeError:
+                    # 如果文件名包含无法编码的字符，则使用安全的显示方式
+                    self.append_log(f"- [文件名包含特殊字符]")
             
             # 启用转换按钮
             self.convert_btn.setEnabled(True)
         else:
             self.append_log("没有找到需要转换的音频文件")
             self.convert_btn.setEnabled(False)
+    
+    def find_duplicate_files(self):
+        """开始查找重复文件"""
+        folder_path = self.folder_input.text().strip()
+        
+        if not folder_path or not os.path.exists(folder_path):
+            QMessageBox.warning(self, "路径错误", "请选择有效的文件夹路径")
+            return
+        
+        # 禁用按钮防止重复操作
+        self.find_duplicates_btn.setEnabled(False)
+        self.scan_btn.setEnabled(False)
+        self.convert_btn.setEnabled(False)
+        
+        # 创建并启动重复文件查找线程
+        self.duplicate_finder_thread = DuplicateFileFinderThread(folder_path)
+        self.duplicate_finder_thread.progress_updated.connect(self.update_progress)
+        self.duplicate_finder_thread.message_received.connect(self.append_log)
+        self.duplicate_finder_thread.duplicates_found.connect(self.show_duplicate_files)
+        self.duplicate_finder_thread.search_completed.connect(self.on_duplicate_search_completed)
+        
+        # 更新进度条
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("查找重复文件中...")
+        
+        # 开始查找
+        self.duplicate_finder_thread.start()
+    
+    def show_duplicate_files(self, duplicate_groups):
+        """显示找到的重复文件列表"""
+        if not duplicate_groups:
+            return
+        
+        # 创建重复文件对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("重复文件列表")
+        dialog.setMinimumSize(600, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        
+        # 创建重复文件选择模型
+        self.duplicate_file_model = QStandardItemModel()
+        self.duplicate_file_model.setHorizontalHeaderLabels(["选择", "文件路径", "大小", "修改日期"])
+        
+        # 添加重复文件组
+        for group_idx, file_group in enumerate(duplicate_groups):
+            # 添加组标题
+            group_title = QStandardItem(f"重复组 #{group_idx + 1} (共{len(file_group)}个文件)")
+            group_title.setEditable(False)
+            group_title.setBackground(QBrush(QColor(240, 240, 240)))
+            self.duplicate_file_model.appendRow([group_title, QStandardItem(), QStandardItem(), QStandardItem()])
+            
+            # 添加文件信息
+            for file_path in file_group:
+                try:
+                    # 获取文件信息
+                    file_size = os.path.getsize(file_path) / (1024 * 1024)  # MB
+                    file_mtime = os.path.getmtime(file_path)
+                    file_mtime_str = datetime.fromtimestamp(file_mtime).strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # 创建可勾选的项目
+                    check_item = QStandardItem()
+                    check_item.setCheckable(True)
+                    check_item.setCheckState(Qt.Unchecked)
+                    
+                    # 文件名项目
+                    file_item = QStandardItem(file_path)
+                    file_item.setEditable(False)
+                    
+                    # 文件大小项目
+                    size_item = QStandardItem(f"{file_size:.2f} MB")
+                    size_item.setEditable(False)
+                    
+                    # 修改日期项目
+                    date_item = QStandardItem(file_mtime_str)
+                    date_item.setEditable(False)
+                    
+                    # 添加到模型
+                    self.duplicate_file_model.appendRow([check_item, file_item, size_item, date_item])
+                except Exception as e:
+                    # 处理无法获取文件信息的情况
+                    error_item = QStandardItem(f"{file_path} (无法获取文件信息: {str(e)})")
+                    error_item.setEditable(False)
+                    error_item.setForeground(QBrush(QColor(255, 0, 0)))
+                    self.duplicate_file_model.appendRow([QStandardItem(), error_item, QStandardItem(), QStandardItem()])
+        
+        # 创建表格视图
+        table_view = QTableView()
+        table_view.setModel(self.duplicate_file_model)
+        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table_view.setAlternatingRowColors(True)
+        
+        # 设置第一列宽度
+        table_view.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        
+        content_layout.addWidget(table_view)
+        scroll_area.setWidget(content_widget)
+        
+        # 添加操作按钮
+        btn_layout = QHBoxLayout()
+        
+        select_all_btn = QPushButton("全选")
+        select_all_btn.clicked.connect(lambda: self.select_all_duplicates(True))
+        
+        deselect_all_btn = QPushButton("取消全选")
+        deselect_all_btn.clicked.connect(lambda: self.select_all_duplicates(False))
+        
+        delete_btn = QPushButton("删除选中文件")
+        delete_btn.clicked.connect(lambda: self.delete_selected_duplicates(dialog))
+        
+        btn_layout.addWidget(select_all_btn)
+        btn_layout.addWidget(deselect_all_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(delete_btn)
+        
+        layout.addWidget(scroll_area)
+        layout.addLayout(btn_layout)
+        
+        # 显示对话框
+        dialog.exec_()
+    
+    def select_all_duplicates(self, select):
+        """全选或取消全选重复文件"""
+        check_state = Qt.Checked if select else Qt.Unchecked
+        
+        for row in range(self.duplicate_file_model.rowCount()):
+            item = self.duplicate_file_model.item(row, 0)
+            if item and item.isCheckable():
+                item.setCheckState(check_state)
+    
+    def delete_selected_duplicates(self, dialog):
+        """删除选中的重复文件"""
+        files_to_delete = []
+        
+        # 收集选中的文件
+        for row in range(self.duplicate_file_model.rowCount()):
+            check_item = self.duplicate_file_model.item(row, 0)
+            file_item = self.duplicate_file_model.item(row, 1)
+            
+            if check_item and check_item.isCheckable() and check_item.checkState() == Qt.Checked and file_item:
+                file_path = file_item.text()
+                if os.path.exists(file_path):
+                    files_to_delete.append(file_path)
+        
+        if not files_to_delete:
+            QMessageBox.information(self, "提示", "请先选择要删除的文件")
+            return
+        
+        # 确认删除
+        reply = QMessageBox.question(self, "确认删除", f"确定要删除选中的 {len(files_to_delete)} 个文件吗？此操作不可恢复！",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            deleted_count = 0
+            failed_count = 0
+            
+            for file_path in files_to_delete:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    self.append_log(f"已删除重复文件: {file_path}")
+                except Exception as e:
+                    failed_count += 1
+                    self.append_log(f"删除文件失败: {file_path}, 错误: {str(e)}")
+            
+            QMessageBox.information(self, "删除完成", 
+                                  f"删除操作完成:\n成功删除 {deleted_count} 个文件\n删除失败 {failed_count} 个文件")
+            
+            # 关闭对话框
+            dialog.accept()
+    
+    def on_duplicate_search_completed(self, success, message):
+        """重复文件查找完成后的处理"""
+        self.progress_bar.setFormat(message)
+        
+        # 重新启用按钮
+        self.find_duplicates_btn.setEnabled(True)
+        self.scan_btn.setEnabled(True)
+        self.convert_btn.setEnabled(True)
     
     def start_conversion(self):
         """开始音频格式转换"""
@@ -7287,10 +7697,16 @@ class AudioFormatConverterWindow(QWidget):
         self.progress_bar.setFormat(f"{value}%")
     
     def append_log(self, message):
-        """添加日志信息"""
+        """添加日志信息，确保中文正确显示"""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
-        self.log_display.insertPlainText(log_entry)
+        try:
+            log_entry = f"[{timestamp}] {message}\n"
+            self.log_display.insertPlainText(log_entry)
+        except UnicodeEncodeError:
+            # 如果消息包含无法编码的字符，使用安全的显示方式
+            safe_message = "[消息包含特殊字符]"
+            log_entry = f"[{timestamp}] {safe_message}\n"
+            self.log_display.insertPlainText(log_entry)
         # 自动滚动到底部
         self.log_display.moveCursor(QTextCursor.MoveOperation.End)
     
@@ -7321,8 +7737,70 @@ class AudioFormatConverterWindow(QWidget):
                 # 忽略已断开的信号
                 pass
     
+    def load_settings(self):
+        """加载保存的设置"""
+        try:
+            # 确保配置目录存在
+            if not os.path.exists(CONFIG_DIR):
+                try:
+                    os.makedirs(CONFIG_DIR)
+                except Exception as e:
+                    print(f"创建配置目录失败: {e}")
+                    return
+            
+            # 尝试加载设置
+            if os.path.exists(AUDIO_CONVERTER_SETTINGS_FILE):
+                try:
+                    with open(AUDIO_CONVERTER_SETTINGS_FILE, 'rb') as f:
+                        settings = pickle.load(f)
+                except Exception as e:
+                    print(f"加载设置文件失败: {e}")
+                    return
+                
+                # 应用设置
+                if 'folder_path' in settings:
+                    self.folder_input.setText(settings['folder_path'])
+                if 'target_format' in settings:
+                    index = self.format_combo.findText(settings['target_format'].upper())
+                    if index >= 0:
+                        self.format_combo.setCurrentIndex(index)
+                if 'ffmpeg_path' in settings:
+                    self.ffmpeg_input.setText(settings['ffmpeg_path'])
+                if 'overwrite_existing' in settings:
+                    self.overwrite_checkbox.setChecked(settings['overwrite_existing'])
+        except Exception as e:
+            print(f"加载设置时出错: {e}")
+    
+    def save_settings(self):
+        """保存当前设置"""
+        try:
+            # 确保配置目录存在
+            if not os.path.exists(CONFIG_DIR):
+                try:
+                    os.makedirs(CONFIG_DIR)
+                except Exception as e:
+                    print(f"创建配置目录失败: {e}")
+                    return
+            
+            # 收集当前设置
+            settings = {
+                'folder_path': self.folder_input.text().strip(),
+                'target_format': self.format_combo.currentText().lower(),
+                'ffmpeg_path': self.ffmpeg_input.text().strip(),
+                'overwrite_existing': self.overwrite_checkbox.isChecked()
+            }
+            
+            # 保存设置
+            with open(AUDIO_CONVERTER_SETTINGS_FILE, 'wb') as f:
+                pickle.dump(settings, f)
+        except Exception as e:
+            print(f"保存设置时出错: {e}")
+    
     def closeEvent(self, event):
         """窗口关闭事件处理"""
+        # 保存当前设置
+        self.save_settings()
+        
         self.stop_conversion()
         self.disconnect_signals()
         # 将窗口添加到父窗口的子窗口列表中进行管理
