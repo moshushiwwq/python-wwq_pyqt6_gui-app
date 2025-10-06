@@ -35,13 +35,13 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLineEdit, QDialog, QGroupBox,
     QFormLayout, QSpinBox, QSizePolicy, QFrame, QComboBox,
     QToolButton, QSystemTrayIcon, QStyle, QMenu, QScrollArea,
-    QTreeView, QCheckBox
+    QTreeView, QCheckBox, QTableView, QHeaderView, QAbstractItemView, QButtonGroup, QRadioButton
 )
 # 在PyQt6中，QStandardItem和QStandardItemModel位于QtGui模块
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
 from PyQt6.QtGui import QAction, QTextCursor
 from PyQt6.QtGui import QFont, QPainter, QPen, QBrush, QColor , QIcon , QPixmap, QGuiApplication, QRadialGradient, QPalette, QTextDocument
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, pyqtSignal,QSettings, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, pyqtSignal, pyqtSlot, QSettings, QRectF, QPointF
 
 # ===== 设置日志配置 =====
 import os
@@ -301,6 +301,7 @@ APP_SETTINGS_FILE = os.path.join(CONFIG_DIR, 'app_settings.pkl')
 GAME2048_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, '2048_high_score')  # 不使用.txt后缀
 SNAKE_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, 'snake_high_score.pickle')
 DINO_GAME_SCORES_FILE = os.path.join(CONFIG_DIR, 'dino_game_scores.pkl')
+TETRIS_HIGH_SCORE_FILE = os.path.join(CONFIG_DIR, 'tetris_high_score.pkl')
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -367,7 +368,7 @@ VERSION_HISTORY = [
 class AppLauncher(QMainWindow):
     """
     应用程序启动器主窗口类
-    提供界面让用户选择要运行的应用程序
+    提供界面让用户选择要运行的应用程序，采用卡片式布局
     """
     def __init__(self):
         super().__init__()
@@ -400,129 +401,282 @@ class AppLauncher(QMainWindow):
         self.center_window()
         
     def init_ui(self):
-        """初始化用户界面"""
+        """初始化用户界面，采用卡片式布局设计风格"""
         # 设置窗口标题和尺寸
-        self.setWindowTitle('Python_box_designed_by_wwq')
-        self.setGeometry(100, 100, 500, 500)
+        self.setWindowTitle('Python Box_Designed_by_wwq')
+        self.setGeometry(100, 100, 800, 700)  # 增加主窗口高度
+        self.setMinimumSize(700, 600)  # 增加最小窗口高度
+        
+        # 设置全局样式 - 采用卡片式设计（移除PyQt不支持的CSS属性）
+        self.setStyleSheet("""
+            QMainWindow { 
+                background-color: #f5f5f7; 
+            }
+            QLabel#categoryLabel {
+                color: #333333;
+                font-weight: bold;
+                font-size: 18px;
+                margin: 15px 0 10px 10px;
+            }
+            QFrame#cardFrame {
+                background-color: white;
+                border-radius: 12px;
+                border: 1px solid #e0e0e0;  /* 添加1像素浅灰色边框 */
+            }
+            QFrame#cardFrame:hover {
+                background-color: #f8f9fa;
+            }
+            QPushButton#cardButton {
+                background-color: transparent;
+                color: #2d3436;
+                font-size: 16px;
+                font-weight: 500;
+                border: none;
+                text-align: left;
+                padding: 20px;
+                border-radius: 12px;
+            }
+            QPushButton#cardButton:hover {
+                background-color: rgba(0, 0, 0, 0.02);
+            }
+        """)
         
         # 创建主窗口部件
         central_widget = QWidget()
+        central_widget.setStyleSheet("background-color: #f5f5f7;")
         self.setCentralWidget(central_widget)
         
-        # 创建垂直布局
+        # 创建主垂直布局
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setContentsMargins(40, 10, 40, 40)  # 减小顶部边距，保留其他边距
+        main_layout.setSpacing(20)  # 减小元素间距
         
-        # 创建标题标签
-        title_label = QLabel('Python_box')
-        title_label.setFont(QFont("SimHei", 24, QFont.Weight.Bold))
+        # 创建标题区域
+        title_label = QLabel('Python Box')
+        title_label.setFont(QFont("SimHei", 28, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("color: #2d3436;")  # 移除底部边距
         main_layout.addWidget(title_label)
         
-        # 创建游戏按钮组
-        games_group = QGroupBox("游戏")
-        games_layout = QVBoxLayout()
-        games_group.setLayout(games_layout)
-        games_layout.setSpacing(10)
+        subtitle_label = QLabel('多功能实用工具集')
+        subtitle_label.setFont(QFont("SimHei", 14))
+        subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle_label.setStyleSheet("color: #636e72;")  # 移除底部边距
+        main_layout.addWidget(subtitle_label)
         
-        # 创建2048游戏按钮
-        self.game2048_button = QPushButton('2048游戏')
-        self.game2048_button.setFont(self.font)
-        self.game2048_button.setStyleSheet("background-color: #4CAF50; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.game2048_button.clicked.connect(self.run_game2048)
-        games_layout.addWidget(self.game2048_button)
+        # 添加分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        # PyQt6中不需要设置阴影，使用样式表来控制外观
+        line.setStyleSheet("background-color: #dfe6e9; height: 1px;")  # 移除底部边距
+        main_layout.addWidget(line)
         
-        # 创建贪吃蛇游戏按钮
-        self.snake_button = QPushButton('贪吃蛇游戏')
-        self.snake_button.setFont(self.font)
-        self.snake_button.setStyleSheet("background-color: #2196F3; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.snake_button.clicked.connect(self.run_snake)
-        games_layout.addWidget(self.snake_button)
+        # 游戏类别标签
+        games_label = QLabel("游戏")
+        games_label.setObjectName("categoryLabel")
+        main_layout.addWidget(games_label)
         
-        # 创建小恐龙游戏按钮
+        # 游戏卡片网格布局 - 每行2个卡片
+        games_grid = QGridLayout()
+        games_grid.setSpacing(45)  # 增大卡片之间的水平间距
+        games_grid.setVerticalSpacing(40)  # 增大卡片之间的垂直间距
+        games_grid.setContentsMargins(15, 0, 15, 0)  # 减少边距
+        main_layout.addLayout(games_grid)
+        
+        # 创建2048游戏卡片
+        self.create_card(games_grid, 0, 0, "2048游戏", 
+                        "background-color: #f8f9fa; border-left: 5px solid #4CAF50;",
+                        self.run_game2048)
+        
+        # 创建贪吃蛇游戏卡片
+        self.create_card(games_grid, 0, 1, "贪吃蛇游戏", 
+                        "background-color: #f8f9fa; border-left: 5px solid #2196F3;",
+                        self.run_snake)
+        
+        # 创建小恐龙游戏卡片
         if DinoGame:
-            self.dino_button = QPushButton('小恐龙游戏')
-            self.dino_button.setFont(self.font)
-            self.dino_button.setStyleSheet("background-color: #9C27B0; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-            self.dino_button.clicked.connect(self.run_dino_game)
-            games_layout.addWidget(self.dino_button)
+            self.create_card(games_grid, 1, 0, "小恐龙游戏", 
+                            "background-color: #f8f9fa; border-left: 5px solid #9C27B0;",
+                            self.run_dino_game)
         
-        # 创建俄罗斯方块游戏按钮
+        # 创建俄罗斯方块游戏卡片
         if TetrisGame:
-            self.tetris_button = QPushButton('俄罗斯方块')
-            self.tetris_button.setFont(self.font)
-            self.tetris_button.setStyleSheet("background-color: #F44336; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-            self.tetris_button.clicked.connect(self.run_tetris_game)
-            games_layout.addWidget(self.tetris_button)
+            self.create_card(games_grid, 1, 1, "俄罗斯方块", 
+                            "background-color: #f8f9fa; border-left: 5px solid #F44336;",
+                            self.run_tetris_game)
         
-        main_layout.addWidget(games_group)
+        # 设置游戏网格的列拉伸
+        for i in range(2):
+            games_grid.setColumnStretch(i, 1)
         
-        # 创建工具按钮组
-        tools_group = QGroupBox("工具")
-        tools_layout = QVBoxLayout()
-        tools_group.setLayout(tools_layout)
-        tools_layout.setSpacing(10)
+        # 工具类别标签
+        tools_label = QLabel("工具")
+        tools_label.setObjectName("categoryLabel")
+        main_layout.addWidget(tools_label)
         
-        # 创建小说下载器按钮
-        self.novel_downloader_button = QPushButton('小说下载器')
-        self.novel_downloader_button.setFont(self.font)
-        self.novel_downloader_button.setStyleSheet("background-color: #FF9800; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.novel_downloader_button.clicked.connect(self.run_novel_downloader)
-        tools_layout.addWidget(self.novel_downloader_button)
+        # 工具卡片网格布局 - 每行2个卡片
+        tools_grid = QGridLayout()
+        tools_grid.setSpacing(45)  # 增大卡片之间的水平间距
+        tools_grid.setVerticalSpacing(40)  # 增大卡片之间的垂直间距
+        tools_grid.setContentsMargins(15, 0, 15, 0)  # 减少边距
+        main_layout.addLayout(tools_grid)
         
-        # 创建视频下载器按钮
-        self.video_downloader_button = QPushButton('视频下载器')
-        self.video_downloader_button.setFont(self.font)
-        self.video_downloader_button.setStyleSheet("background-color: #9C27B0; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.video_downloader_button.clicked.connect(self.run_video_downloader)
-        tools_layout.addWidget(self.video_downloader_button)
+        # 创建小说下载器卡片
+        self.create_card(tools_grid, 0, 0, "小说下载器", 
+                        "background-color: #f8f9fa; border-left: 5px solid #FF9800;",
+                        self.run_novel_downloader)
         
-        # 创建音频格式转换工具按钮
-        self.audio_converter_button = QPushButton('音频格式转换工具')
-        self.audio_converter_button.setFont(self.font)
-        self.audio_converter_button.setStyleSheet("background-color: #009688; color: white; padding: 15px; border-radius: 5px; font-size: 16px;")
-        self.audio_converter_button.clicked.connect(self.run_audio_converter)
-        tools_layout.addWidget(self.audio_converter_button)
+        # 创建视频下载器卡片
+        self.create_card(tools_grid, 0, 1, "视频下载器", 
+                        "background-color: #f8f9fa; border-left: 5px solid #9C27B0;",
+                        self.run_video_downloader)
         
-        main_layout.addWidget(tools_group)
+        # 创建音频格式转换工具卡片
+        self.create_card(tools_grid, 1, 0, "音频格式转换工具", 
+                        "background-color: #f8f9fa; border-left: 5px solid #009688;",
+                        self.run_audio_converter)
+
+        # 创建应用程序打包工具卡片
+        self.create_card(tools_grid, 1, 1, "应用程序打包工具", 
+                        "background-color: #f8f9fa; border-left: 5px solid #3F51B5;",
+                        self.run_package_app)
+
+        # 设置工具网格的列拉伸
+        for i in range(2):
+            tools_grid.setColumnStretch(i, 1)
         
-        # 创建设置和日志按钮组
-        settings_group = QGroupBox("设置与帮助")
+        # 减少不必要的空白，移除多余的伸缩项
+        # main_layout.addStretch()
+        
+        # 添加底部信息
+        footer_label = QLabel('© 2023 Python Box_Designed_by_wwq 多功能实用工具集')
+        footer_label.setFont(QFont("SimHei", 10))
+        footer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        footer_label.setStyleSheet("color: #b2bec3; margin-top: 15px;")
+        main_layout.addWidget(footer_label)
+        
+        # 创建设置和帮助区域（下移到底部）
         settings_layout = QHBoxLayout()
-        settings_group.setLayout(settings_layout)
+        settings_layout.setSpacing(15)
+        main_layout.addLayout(settings_layout)
         
         # 创建设置按钮
         self.settings_button = QPushButton('设置')
         self.settings_button.setFont(self.font)
-        self.settings_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.settings_button.setStyleSheet("""
+            QPushButton {
+                background-color: #636e72;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 500;
+                border: none;
+                /* PyQt6不支持transition属性，已移除 */
+            }
+            QPushButton:hover {
+                background-color: #b2bec3;
+                /* PyQt6不支持transform属性，使用背景色变化作为替代效果 */
+            }
+        """)
         self.settings_button.clicked.connect(self.show_settings)
         settings_layout.addWidget(self.settings_button)
         
         # 创建日志按钮
         self.log_button = QPushButton('查看日志')
         self.log_button.setFont(self.font)
-        self.log_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.log_button.setStyleSheet("""
+            QPushButton {
+                background-color: #636e72;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 500;
+                border: none;
+                /* PyQt6不支持transition属性，已移除 */
+            }
+            QPushButton:hover {
+                background-color: #b2bec3;
+                /* PyQt6不支持transform属性，使用背景色变化作为替代效果 */
+            }
+        """)
         self.log_button.clicked.connect(self.show_log)
         settings_layout.addWidget(self.log_button)
         
         # 创建版本历史按钮
         self.version_button = QPushButton('版本历史')
         self.version_button.setFont(self.font)
-        self.version_button.setStyleSheet("background-color: #607D8B; color: white; padding: 10px; border-radius: 5px; font-size: 14px;")
+        self.version_button.setStyleSheet("""
+            QPushButton {
+                background-color: #636e72;
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 500;
+                border: none;
+                /* PyQt6不支持transition属性，已移除 */
+            }
+            QPushButton:hover {
+                background-color: #b2bec3;
+                /* PyQt6不支持transform属性，使用背景色变化作为替代效果 */
+            }
+        """)
         self.version_button.clicked.connect(self.show_version_history)
         settings_layout.addWidget(self.version_button)
         
-        main_layout.addWidget(settings_group)
-        
         # 创建状态栏
-        self.statusBar().showMessage("欢迎使用Python_box")
+        self.statusBar().setStyleSheet("background-color: #f5f5f7; color: #636e72; border: none;")
+        self.statusBar().showMessage("欢迎使用 Python Box")
         
         # 创建系统托盘图标
         self.create_tray_icon()
         
         # 连接窗口关闭事件
         self.closeEvent = self.on_close_event
+    
+    def create_card(self, parent_layout, row, col, title, style, callback):
+        """
+        创建卡片组件并添加到指定布局
+        
+        参数:
+            parent_layout: 父布局
+            row: 卡片所在行
+            col: 卡片所在列
+            title: 卡片标题
+            style: 卡片样式
+            callback: 点击卡片的回调函数
+        """
+        # 创建卡片框架
+        card_frame = QFrame()
+        card_frame.setObjectName("cardFrame")
+        card_frame.setMinimumHeight(80)  # 增加卡片最小高度，确保文字显示空间
+        card_frame.setMinimumWidth(300)  # 增加卡片最小宽度，确保文字完整显示
+        card_frame.setMaximumWidth(400)  # 增加卡片最大宽度，确保文字完整显示
+        card_frame.setMaximumHeight(100)  # 增加卡片最大高度，确保文字显示空间
+        # 合并基础样式和传入样式，确保边框样式被应用
+        base_style = "border: 1px solid #e0e0e0;"  # 确保边框样式
+        card_frame.setStyleSheet(base_style + " " + style)
+        
+        # 创建卡片布局
+        card_layout = QVBoxLayout(card_frame)
+        card_layout.setContentsMargins(10, 10, 10, 10)  # 设置适当边距，确保文字不会紧贴边缘
+        card_layout.setSpacing(0)  # 移除布局内间距
+        
+        # 创建卡片按钮
+        card_button = QPushButton(title)
+        card_button.setObjectName("cardButton")
+        card_button.setFont(self.font)
+        card_button.clicked.connect(callback)
+        card_button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)  # 让按钮填充整个卡片
+        card_button.setContentsMargins(5, 5, 5, 5)  # 设置按钮边距，确保文字有足够空间显示
+        
+        # 添加按钮到卡片布局
+        card_layout.addWidget(card_button)
+        
+        # 将卡片添加到父布局
+        parent_layout.addWidget(card_frame, row, col)
         
     def center_window(self):
         """将窗口显示在屏幕中央偏上位置"""
@@ -620,9 +774,9 @@ class AppLauncher(QMainWindow):
                         # 记录操作日志
                         logger.info("应用程序最小化到系统托盘")
                 else:
-                    # 如果设置不允许最小化到托盘，直接关闭程序
-                    logger.info("应用程序根据设置直接关闭")
-                    self.close()
+                    # 如果设置不允许最小化到托盘，让窗口正常缩小到任务栏
+                    logger.info("应用程序最小化到任务栏")
+                    # 不执行任何特殊操作，让窗口按照默认行为最小化到任务栏
         # 调用父类的changeEvent以确保正常的事件处理流程
         super().changeEvent(event)
 
@@ -743,7 +897,8 @@ class AppLauncher(QMainWindow):
     
     def run_game2048(self):
         """运行2048游戏，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.game2048_button)
+        # 移除对不存在的game2048_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动2048游戏")
@@ -769,11 +924,12 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', f'无法运行2048游戏: {str(e)}')
-            self._reset_button_style(self.game2048_button, "#4CAF50")
+            # 移除对不存在的game2048_button属性的引用
         
     def run_snake(self):
         """运行贪吃蛇游戏，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.snake_button)
+        # 移除对不存在的snake_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动贪吃蛇游戏")
@@ -797,11 +953,12 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', f'无法运行贪吃蛇游戏: {str(e)}')
-            self._reset_button_style(self.snake_button, "#2196F3")
+            # 移除对不存在的snake_button属性的引用
         
     def run_novel_downloader(self):
         """运行小说下载器，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.novel_downloader_button)
+        # 移除对不存在的novel_downloader_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动小说下载器")
@@ -830,13 +987,14 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.novel_downloader_button, "#FF9800")
+            # 移除对不存在的novel_downloader_button属性的引用
             # 记录错误日志
             self.log_action(error_msg, "error")
         
     def run_video_downloader(self):
         """运行视频下载器，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.video_downloader_button)
+        # 移除对不存在的video_downloader_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动视频下载器")
@@ -865,13 +1023,14 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.video_downloader_button, "#9C27B0")
+            # 移除对不存在的video_downloader_button属性的引用
             # 记录错误日志
             self.log_action(error_msg, "error")
     
     def run_audio_converter(self):
         """运行音频格式转换工具，保留主窗口并显示进度条"""
-        self._button_clicked_feedback(self.audio_converter_button)
+        # 移除对不存在的audio_converter_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动音频格式转换工具")
@@ -900,17 +1059,53 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.audio_converter_button, "#009688")
+            # 移除对不存在的audio_converter_button属性的引用
             # 记录错误日志
             self.log_action(error_msg, "error")
-        
+
+    def run_package_app(self):
+        """运行应用程序打包工具，保留主窗口并显示进度条"""
+        # 移除对不存在的按钮属性的引用
+        pass
+        try:
+            # 创建进度条窗口
+            self.create_progress_window("启动应用程序打包工具")
+            
+            # 启动进度更新
+            self.update_progress()
+            
+            # 创建应用程序打包工具窗口，保留主窗口可见
+            self.package_window = PackageAppGUI()
+            self.child_windows.append(self.package_window)
+            
+            # 设置窗口关闭事件
+            self.package_window.destroyed.connect(self._on_child_window_close_without_event)
+            
+            # 完成进度显示
+            self.finalize_progress()
+            
+            # 显示应用程序打包工具窗口
+            self.package_window.show()
+            
+            # 记录操作日志
+            self.log_action("启动应用程序打包工具")
+        except Exception as e:
+            # 如果出现异常，确保进度窗口关闭
+            error_msg = f'无法运行应用程序打包工具: {str(e)}'
+            if self.progress_window:
+                self.progress_window.close()
+            QMessageBox.critical(self, '错误', error_msg)
+            # 记录错误日志
+            self.log_action(error_msg, "error")
+
     def run_dino_game(self):
         """运行小恐龙游戏，保留主窗口并显示进度条"""
         if not DinoGame:
             QMessageBox.warning(self, "警告", "小恐龙游戏模块不可用，请确保dino_game.py文件存在且可导入。")
             return
         
-        self._button_clicked_feedback(self.dino_button)
+        # 移除对不存在的dino_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动小恐龙游戏")
@@ -944,7 +1139,7 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.dino_button, "#9C27B0")
+            # 移除对不存在的dino_button属性的引用
             # 记录错误日志
             self.log_action(error_msg, "error")
         
@@ -954,7 +1149,8 @@ class AppLauncher(QMainWindow):
             QMessageBox.warning(self, "警告", "俄罗斯方块游戏模块不可用，请确保tetris_game.py文件存在且可导入。")
             return
         
-        self._button_clicked_feedback(self.tetris_button)
+        # 移除对不存在的tetris_button属性的引用
+        pass
         try:
             # 创建进度条窗口
             self.create_progress_window("启动俄罗斯方块游戏")
@@ -988,7 +1184,7 @@ class AppLauncher(QMainWindow):
             if self.progress_window:
                 self.progress_window.close()
             QMessageBox.critical(self, '错误', error_msg)
-            self._reset_button_style(self.tetris_button, "#F44336")
+            # 移除对不存在的tetris_button属性的引用
             # 记录错误日志
             self.log_action(error_msg, "error")
     
@@ -1366,25 +1562,28 @@ class DinoGame(QWidget):
         """加载最高分记录"""
         try:
             import pickle
-            if hasattr(self, 'parent') and self.parent:
-                save_path = DINO_GAME_SCORES_FILE
+            save_path = DINO_GAME_SCORES_FILE
             if os.path.exists(save_path):
                 with open(save_path, 'rb') as f:
                     self.high_score = pickle.load(f)
                     self.high_score_label.setText(f"最高分: {self.high_score}")
         except Exception as e:
             print(f"加载最高分失败: {e}")
+            logger.error(f"加载小恐龙游戏最高分失败: {e}")
             
     def save_high_score(self):
         """保存最高分记录"""
         try:
             import pickle
-            if hasattr(self, 'parent') and self.parent:
-                save_path = DINO_GAME_SCORES_FILE
+            save_path = DINO_GAME_SCORES_FILE
+            # 确保配置目录存在
+            if not os.path.exists(CONFIG_DIR):
+                os.makedirs(CONFIG_DIR)
             with open(save_path, 'wb') as f:
                 pickle.dump(self.high_score, f)
         except Exception as e:
             print(f"保存最高分失败: {e}")
+            logger.error(f"保存小恐龙游戏最高分失败: {e}")
             
     def center_window(self):
         """将窗口居中显示"""
@@ -2097,6 +2296,17 @@ class TetrisGame(QWidget):
         info_panel_layout.addWidget(score_label)
         info_panel_layout.addWidget(self.score_label)
         
+        # 最高分显示
+        high_score_label = QLabel("最高分:")
+        high_score_label.setFont(QFont("SimHei", 12, QFont.Weight.Bold))
+        self.high_score_label = QLabel("0")
+        self.high_score_label.setFont(QFont("SimHei", 14, QFont.Weight.Bold))
+        self.high_score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.high_score_label.setStyleSheet("background-color: #f0f0f0; padding: 5px;")
+        
+        info_panel_layout.addWidget(high_score_label)
+        info_panel_layout.addWidget(self.high_score_label)
+        
         # 消除行数显示
         lines_label = QLabel("消除行数:")
         lines_label.setFont(QFont("SimHei", 12, QFont.Weight.Bold))
@@ -2185,6 +2395,8 @@ class TetrisGame(QWidget):
         self.score = 0
         self.lines = 0
         self.level = 1
+        self.high_score = 0
+        self.load_high_score()
         
     def start_game(self):
         """开始游戏"""
@@ -2223,16 +2435,51 @@ class TetrisGame(QWidget):
         self.start_button.setEnabled(True)
         self.pause_button.setEnabled(False)
         
+        # 检查是否打破最高记录
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.save_high_score()
+            self.high_score_label.setText(str(self.high_score))
+            message = f"游戏结束！\n你的分数: {self.score}\n消除行数: {self.lines}\n恭喜你创造了新的最高记录！\n是否重新开始？"
+        else:
+            message = f"游戏结束！\n你的分数: {self.score}\n消除行数: {self.lines}\n当前最高记录: {self.high_score}\n是否重新开始？"
+        
         # 显示游戏结束对话框
         reply = QMessageBox.question(
             self,
             "游戏结束",
-            f"游戏结束！\n你的分数: {self.score}\n消除行数: {self.lines}\n是否重新开始？",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
             self.restart_game()
+    
+    def load_high_score(self):
+        """加载最高分记录"""
+        try:
+            import pickle
+            if os.path.exists(TETRIS_HIGH_SCORE_FILE):
+                with open(TETRIS_HIGH_SCORE_FILE, 'rb') as f:
+                    self.high_score = pickle.load(f)
+                    self.high_score_label.setText(str(self.high_score))
+        except Exception as e:
+            print(f"加载最高分失败: {e}")
+            logger.error(f"加载俄罗斯方块最高分失败: {e}")
+            self.high_score = 0
+    
+    def save_high_score(self):
+        """保存最高分记录"""
+        try:
+            import pickle
+            # 确保配置目录存在
+            if not os.path.exists(CONFIG_DIR):
+                os.makedirs(CONFIG_DIR)
+            with open(TETRIS_HIGH_SCORE_FILE, 'wb') as f:
+                pickle.dump(self.high_score, f)
+        except Exception as e:
+            print(f"保存最高分失败: {e}")
+            logger.error(f"保存俄罗斯方块最高分失败: {e}")
             
     def update_score(self, score, lines):
         """更新分数和消除行数显示"""
@@ -6431,10 +6678,13 @@ class VideoDownloaderWindow(QWidget):
         self.stop_btn.setEnabled(False)
         self.save_settings_btn = QPushButton("保存设置")
         self.save_settings_btn.clicked.connect(self.save_settings)
+        self.delete_suffix_btn = QPushButton("删除指定后缀名文件")
+        self.delete_suffix_btn.clicked.connect(self.show_delete_by_suffix_dialog)
 
         btn_layout.addWidget(self.download_btn)
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.save_settings_btn)
+        btn_layout.addWidget(self.delete_suffix_btn)
         settings_layout.addRow("", btn_layout)
 
         settings_group.setLayout(settings_layout)
@@ -6837,17 +7087,213 @@ class VideoDownloaderWindow(QWidget):
         """更新进度条"""
         self.progress_bar.setValue(value)
         self.progress_bar.setFormat(f"{value}%")
-
-    def append_log(self , message) :
-        """添加日志信息"""
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
-        self.log_display.insertPlainText(log_entry)
+    
+    def append_log(self, message):
+        """添加日志信息到日志显示框，并自动滚动到底部
+        
+        Args:
+            message: 要添加的日志消息
+        """
+        self.log_display.append(f"[{time.strftime('%H:%M:%S')}] {message}")
         # 自动滚动到底部
-        self.log_display.moveCursor(QTextCursor.MoveOperation.End)
-
-
-
+        self.log_display.verticalScrollBar().setValue(
+            self.log_display.verticalScrollBar().maximum()
+        )
+        
+    def show_delete_by_suffix_dialog(self):
+        """显示删除指定后缀名文件的对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("删除指定后缀名文件")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 创建目录选择部分
+        dir_layout = QHBoxLayout()
+        dir_label = QLabel("删除目录:")
+        self.delete_dir_edit = QLineEdit()
+        self.delete_dir_edit.setText(self.path_input.text())  # 默认使用视频保存路径
+        browse_dir_btn = QPushButton("浏览...")
+        browse_dir_btn.clicked.connect(lambda: self.browse_delete_dir(dialog))
+        
+        dir_layout.addWidget(dir_label)
+        dir_layout.addWidget(self.delete_dir_edit)
+        dir_layout.addWidget(browse_dir_btn)
+        
+        # 创建后缀名输入部分
+        suffix_layout = QHBoxLayout()
+        suffix_label = QLabel("文件后缀名:")
+        self.suffix_edit = QLineEdit()
+        self.suffix_edit.setPlaceholderText("例如: .txt,.log,.tmp 或 txt,log,tmp")
+        
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(self.suffix_edit)
+        
+        # 创建选项部分
+        option_layout = QVBoxLayout()
+        self.include_subdirs = QCheckBox("包含子目录")
+        self.include_subdirs.setChecked(True)
+        self.confirm_before_delete = QCheckBox("删除前确认")
+        self.confirm_before_delete.setChecked(True)
+        
+        option_layout.addWidget(self.include_subdirs)
+        option_layout.addWidget(self.confirm_before_delete)
+        
+        # 创建按钮部分
+        btn_layout = QHBoxLayout()
+        start_delete_btn = QPushButton("开始删除")
+        start_delete_btn.clicked.connect(lambda: self.delete_files_by_suffix(dialog))
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(start_delete_btn)
+        btn_layout.addWidget(cancel_btn)
+        
+        # 添加到主布局
+        layout.addLayout(dir_layout)
+        layout.addLayout(suffix_layout)
+        layout.addLayout(option_layout)
+        layout.addLayout(btn_layout)
+        
+        dialog.exec()
+        
+    def browse_delete_dir(self, parent=None):
+        """浏览删除文件的目录"""
+        dir_path = QFileDialog.getExistingDirectory(
+            parent, "选择要清理的目录", self.delete_dir_edit.text())
+        
+        if dir_path:
+            self.delete_dir_edit.setText(dir_path)
+        
+    def delete_files_by_suffix(self, dialog):
+        """根据后缀名删除文件"""
+        # 获取用户输入的参数
+        delete_dir = self.delete_dir_edit.text().strip()
+        suffix_text = self.suffix_edit.text().strip()
+        include_subdirs = self.include_subdirs.isChecked()
+        confirm_before_delete = self.confirm_before_delete.isChecked()
+        
+        # 参数验证
+        if not delete_dir:
+            QMessageBox.warning(self, "警告", "请选择要清理的目录")
+            return
+        
+        if not suffix_text:
+            QMessageBox.warning(self, "警告", "请输入要删除的文件后缀名")
+            return
+        
+        # 解析后缀名
+        suffixes = [s.strip() for s in suffix_text.split(',') if s.strip()]
+        if not suffixes:
+            QMessageBox.warning(self, "警告", "请输入有效的文件后缀名")
+            return
+        
+        # 标准化后缀名（确保以点开头）
+        normalized_suffixes = []
+        for suffix in suffixes:
+            if not suffix.startswith('.'):
+                normalized_suffixes.append('.' + suffix)
+            else:
+                normalized_suffixes.append(suffix)
+        
+        self.append_log(f"开始搜索文件: 目录='{delete_dir}', 后缀名={','.join(normalized_suffixes)}, 包含子目录={include_subdirs}")
+        
+        # 搜索匹配的文件
+        matching_files = []
+        try:
+            if include_subdirs:
+                for root, _, files in os.walk(delete_dir):
+                    for file in files:
+                        for suffix in normalized_suffixes:
+                            if file.lower().endswith(suffix.lower()):
+                                matching_files.append(os.path.join(root, file))
+                                break
+            else:
+                # 只搜索当前目录
+                for file in os.listdir(delete_dir):
+                    file_path = os.path.join(delete_dir, file)
+                    if os.path.isfile(file_path):
+                        for suffix in normalized_suffixes:
+                            if file.lower().endswith(suffix.lower()):
+                                matching_files.append(file_path)
+                                break
+                                 
+            self.append_log(f"搜索完成，找到 {len(matching_files)} 个匹配的文件")
+        except Exception as e:
+            error_msg = f"搜索文件时出错: {str(e)}"
+            QMessageBox.critical(self, "错误", error_msg)
+            self.append_log(error_msg)
+            return
+        
+        # 检查是否找到匹配的文件
+        if not matching_files:
+            QMessageBox.information(self, "提示", f"在目录 '{delete_dir}' 中未找到匹配后缀名的文件")
+            return
+        
+        # 删除前确认
+        if confirm_before_delete:
+            msg = f"找到 {len(matching_files)} 个匹配的文件，是否确认删除？\n\n"
+            
+            # 显示前5个文件作为示例
+            show_count = min(5, len(matching_files))
+            for i in range(show_count):
+                msg += f"{matching_files[i]}\n"
+            
+            if len(matching_files) > show_count:
+                msg += f"... 还有 {len(matching_files) - show_count} 个文件 ...\n\n"
+            
+            msg += "\n注意：此操作不可撤销！"
+            
+            reply = QMessageBox.question(
+                self, "确认删除", msg, QMessageBox.Yes | QMessageBox.No)
+            
+            if reply != QMessageBox.Yes:
+                return
+        
+        # 执行删除操作
+        deleted_count = 0
+        failed_count = 0
+        failed_files = []
+        
+        self.append_log(f"开始删除文件: 总共 {len(matching_files)} 个文件")
+        
+        try:
+            for file_path in matching_files:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    self.append_log(f"已删除文件: {file_path}")
+                except Exception as e:
+                    failed_count += 1
+                    error_msg = f"{file_path}: {str(e)}"
+                    failed_files.append(error_msg)
+                    self.append_log(f"删除文件失败: {error_msg}")
+        except Exception as e:
+            error_msg = f"删除文件时发生异常: {str(e)}"
+            QMessageBox.critical(self, "错误", error_msg)
+            self.append_log(error_msg)
+            return
+        
+        # 显示删除结果
+        result_msg = f"删除完成！\n成功删除: {deleted_count} 个文件\n删除失败: {failed_count} 个文件"
+        self.append_log(result_msg)
+        
+        if failed_count > 0:
+            # 显示失败文件的详细信息
+            detailed_msg = "删除成功的文件: " + str(deleted_count) + "\n\n删除失败的文件:\n"
+            for failed_file in failed_files:
+                detailed_msg += f"{failed_file}\n"
+            
+            QMessageBox.information(
+                self, "删除结果", result_msg, QMessageBox.Ok)
+        else:
+            QMessageBox.information(
+                self, "删除结果", result_msg, QMessageBox.Ok)
+        
+        # 关闭对话框
+        dialog.accept()
 
 # ===== 重复文件查找线程 - 用于识别内容相同的文件 =====
 class DuplicateFileFinderThread(QThread):
@@ -6859,6 +7305,8 @@ class DuplicateFileFinderThread(QThread):
     message_received = pyqtSignal(str)
     duplicates_found = pyqtSignal(list)
     search_completed = pyqtSignal(bool, str)
+    current_file_processed = pyqtSignal(str)  # 新信号：当前正在处理的文件
+    duplicate_file_found = pyqtSignal(list)   # 新信号：实时发现的单个重复文件组
     
     def __init__(self, folder_path, supported_formats=None):
         super().__init__()
@@ -6874,6 +7322,7 @@ class DuplicateFileFinderThread(QThread):
     def calculate_file_hash(self, file_path, block_size=65536):
         """计算文件的MD5哈希值，用于识别重复文件"""
         try:
+            import hashlib  # 在方法内部导入hashlib以确保运行时可用
             hasher = hashlib.md5()
             with open(file_path, 'rb') as file:
                 buf = file.read(block_size)
@@ -6927,12 +7376,22 @@ class DuplicateFileFinderThread(QThread):
                     self.search_completed.emit(False, "查找已取消")
                     return
                 
+                # 发出当前处理的文件信号
+                try:
+                    self.current_file_processed.emit(file_path)
+                except UnicodeEncodeError:
+                    self.current_file_processed.emit("[文件名包含特殊字符]")
+                
                 # 计算文件哈希值
                 file_hash = self.calculate_file_hash(file_path)
                 if file_hash:
                     # 记录哈希值和对应的文件路径
                     if file_hash in self.file_hashes:
                         self.file_hashes[file_hash].append(file_path)
+                        # 如果这个哈希值现在有多个文件了，说明找到了重复文件
+                        if len(self.file_hashes[file_hash]) == 2:
+                            # 发出实时发现的重复文件组信号
+                            self.duplicate_file_found.emit(self.file_hashes[file_hash])
                     else:
                         self.file_hashes[file_hash] = [file_path]
                 
@@ -6943,9 +7402,16 @@ class DuplicateFileFinderThread(QThread):
             # 筛选出重复的文件组（包含多个文件的哈希组）
             duplicate_groups = [files for files in self.file_hashes.values() if len(files) > 1]
             
-            # 发送重复文件列表
-            self.duplicates_found.emit(duplicate_groups)
+            # 添加调试信息
+            self.message_received.emit(f"即将发送重复文件列表，共{len(duplicate_groups)}组重复文件")
             
+            # 发送重复文件列表
+            try:
+                self.duplicates_found.emit(duplicate_groups)
+                self.message_received.emit("成功发送重复文件列表信号")
+            except Exception as e:
+                self.message_received.emit(f"发送重复文件列表信号时出错: {str(e)}")
+                
             # 完成查找
             if duplicate_groups:
                 total_duplicates = sum(len(group) for group in duplicate_groups)
@@ -6954,6 +7420,7 @@ class DuplicateFileFinderThread(QThread):
                 self.search_completed.emit(True, "查找完成，未发现重复文件")
         except Exception as e:
             self.search_completed.emit(False, f"查找过程中出错: {str(e)}")
+
 
 # ===== 音频格式转换工具 =====
 class AudioFormatConverterThread(VideoDownloadThread):
@@ -7254,11 +7721,15 @@ class AudioFormatConverterWindow(QWidget):
         self.stop_btn.setEnabled(False)  # 初始禁用
         self.find_duplicates_btn = QPushButton("查找重复文件")
         self.find_duplicates_btn.clicked.connect(self.find_duplicate_files)
+        self.delete_by_suffix_btn = QPushButton("删除指定后缀名文件")
+        self.delete_by_suffix_btn.clicked.connect(self.show_delete_by_suffix_dialog)
+        self.delete_by_suffix_btn.setEnabled(False)  # 初始禁用
         
         btn_layout.addWidget(self.scan_btn)
         btn_layout.addWidget(self.convert_btn)
         btn_layout.addWidget(self.stop_btn)
         btn_layout.addWidget(self.find_duplicates_btn)
+        btn_layout.addWidget(self.delete_by_suffix_btn)
         settings_layout.addRow("", btn_layout)
         
         settings_group.setLayout(settings_layout)
@@ -7377,8 +7848,9 @@ class AudioFormatConverterWindow(QWidget):
         path = QFileDialog.getExistingDirectory(self, "选择音频文件文件夹")
         if path:
             self.folder_input.setText(path)
-            # 选择文件夹后启用扫描按钮
+            # 选择文件夹后启用扫描按钮和删除指定后缀名文件按钮
             self.scan_btn.setEnabled(True)
+            self.delete_by_suffix_btn.setEnabled(True)
     
     def browse_ffmpeg(self):
         """浏览并设置FFmpeg路径"""
@@ -7386,6 +7858,76 @@ class AudioFormatConverterWindow(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "选择FFmpeg", "", filter_str)
         if path:
             self.ffmpeg_input.setText(path)
+            
+    def show_delete_by_suffix_dialog(self):
+        """显示删除指定后缀名文件的对话框"""
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("删除指定后缀名文件")
+        dialog.setMinimumSize(400, 200)
+        
+        # 创建布局
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
+        
+        # 目录选择部分
+        dir_layout = QHBoxLayout()
+        dir_label = QLabel("选择要删除文件的目录:")
+        self.delete_dir_edit = QLineEdit()
+        self.delete_dir_edit.setText(self.folder_input.text())
+        browse_dir_btn = QPushButton("浏览...")
+        browse_dir_btn.clicked.connect(self.browse_delete_dir)
+        
+        dir_layout.addWidget(dir_label)
+        dir_layout.addWidget(self.delete_dir_edit)
+        dir_layout.addWidget(browse_dir_btn)
+        
+        # 后缀名输入部分
+        suffix_layout = QHBoxLayout()
+        suffix_label = QLabel("输入要删除的文件后缀名 (如: mp3, wav):")
+        self.suffix_input = QLineEdit()
+        self.suffix_input.setPlaceholderText("多个后缀名用逗号分隔")
+        
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(self.suffix_input)
+        
+        # 选项部分
+        options_layout = QHBoxLayout()
+        self.include_subdirs_check = QCheckBox("包含子目录")
+        self.include_subdirs_check.setChecked(True)
+        self.confirm_before_delete_check = QCheckBox("删除前确认")
+        self.confirm_before_delete_check.setChecked(True)
+        
+        options_layout.addWidget(self.include_subdirs_check)
+        options_layout.addWidget(self.confirm_before_delete_check)
+        options_layout.addStretch()
+        
+        # 按钮部分
+        btn_layout = QHBoxLayout()
+        start_delete_btn = QPushButton("开始删除")
+        start_delete_btn.clicked.connect(lambda: self.delete_files_by_suffix(dialog))
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        btn_layout.addStretch()
+        btn_layout.addWidget(start_delete_btn)
+        btn_layout.addWidget(cancel_btn)
+        
+        # 添加到主布局
+        main_layout.addLayout(dir_layout)
+        main_layout.addLayout(suffix_layout)
+        main_layout.addLayout(options_layout)
+        main_layout.addLayout(btn_layout)
+        
+        # 执行对话框
+        dialog.exec()
+    
+    def browse_delete_dir(self):
+        """浏览并设置要删除文件的目录"""
+        path = QFileDialog.getExistingDirectory(self, "选择要删除文件的目录")
+        if path:
+            self.delete_dir_edit.setText(path)
     
     def scan_files(self):
         """扫描文件夹中的音频文件"""
@@ -7466,6 +8008,8 @@ class AudioFormatConverterWindow(QWidget):
         self.duplicate_finder_thread.message_received.connect(self.append_log)
         self.duplicate_finder_thread.duplicates_found.connect(self.show_duplicate_files)
         self.duplicate_finder_thread.search_completed.connect(self.on_duplicate_search_completed)
+        self.duplicate_finder_thread.current_file_processed.connect(self.update_current_processed_file)
+        self.duplicate_finder_thread.duplicate_file_found.connect(self.append_duplicate_file_log)
         
         # 更新进度条
         self.progress_bar.setValue(0)
@@ -7516,7 +8060,7 @@ class AudioFormatConverterWindow(QWidget):
                     # 创建可勾选的项目
                     check_item = QStandardItem()
                     check_item.setCheckable(True)
-                    check_item.setCheckState(Qt.Unchecked)
+                    check_item.setCheckState(Qt.CheckState.Unchecked)
                     
                     # 文件名项目
                     file_item = QStandardItem(file_path)
@@ -7542,12 +8086,12 @@ class AudioFormatConverterWindow(QWidget):
         # 创建表格视图
         table_view = QTableView()
         table_view.setModel(self.duplicate_file_model)
-        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table_view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table_view.setAlternatingRowColors(True)
         
         # 设置第一列宽度
-        table_view.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        table_view.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         
         content_layout.addWidget(table_view)
         scroll_area.setWidget(content_widget)
@@ -7564,20 +8108,47 @@ class AudioFormatConverterWindow(QWidget):
         delete_btn = QPushButton("删除选中文件")
         delete_btn.clicked.connect(lambda: self.delete_selected_duplicates(dialog))
         
+        # 添加后缀名删除按钮到操作按钮布局
+        delete_by_suffix_btn = QPushButton("删除指定后缀名文件")
+        delete_by_suffix_btn.clicked.connect(lambda: self.delete_files_by_suffix(dialog))
+        
         btn_layout.addWidget(select_all_btn)
         btn_layout.addWidget(deselect_all_btn)
         btn_layout.addStretch()
         btn_layout.addWidget(delete_btn)
+        btn_layout.addWidget(delete_by_suffix_btn)
         
+        # 先添加滚动区域
         layout.addWidget(scroll_area)
+        
+        # 添加后缀名输入区域
+        self.append_log("正在添加后缀名删除区域")
+        suffix_layout = QHBoxLayout()
+        suffix_label = QLabel("输入要删除的文件后缀名 (如: mp3, wav):")
+        self.suffix_input = QLineEdit()
+        self.suffix_input.setPlaceholderText("多个后缀名用逗号分隔")
+        
+        suffix_layout.addWidget(suffix_label)
+        suffix_layout.addWidget(self.suffix_input)
+        
+        # 添加布局到对话框
+        layout.addLayout(suffix_layout)
         layout.addLayout(btn_layout)
         
-        # 显示对话框
-        dialog.exec_()
+        # 调整对话框大小，确保所有内容可见
+        dialog.resize(800, 600)
+        
+        try:
+            # 显示对话框
+            self.append_log("即将显示重复文件对话框")
+            dialog.exec()
+            self.append_log("重复文件对话框已关闭")
+        except Exception as e:
+            self.append_log(f"显示重复文件对话框时出错: {str(e)}")
     
     def select_all_duplicates(self, select):
         """全选或取消全选重复文件"""
-        check_state = Qt.Checked if select else Qt.Unchecked
+        check_state = Qt.CheckState.Checked if select else Qt.CheckState.Unchecked
         
         for row in range(self.duplicate_file_model.rowCount()):
             item = self.duplicate_file_model.item(row, 0)
@@ -7593,7 +8164,7 @@ class AudioFormatConverterWindow(QWidget):
             check_item = self.duplicate_file_model.item(row, 0)
             file_item = self.duplicate_file_model.item(row, 1)
             
-            if check_item and check_item.isCheckable() and check_item.checkState() == Qt.Checked and file_item:
+            if check_item and check_item.isCheckable() and check_item.checkState() == Qt.CheckState.Checked and file_item:
                 file_path = file_item.text()
                 if os.path.exists(file_path):
                     files_to_delete.append(file_path)
@@ -7604,9 +8175,9 @@ class AudioFormatConverterWindow(QWidget):
         
         # 确认删除
         reply = QMessageBox.question(self, "确认删除", f"确定要删除选中的 {len(files_to_delete)} 个文件吗？此操作不可恢复！",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
         
-        if reply == QMessageBox.Yes:
+        if reply == QMessageBox.StandardButton.Yes:
             deleted_count = 0
             failed_count = 0
             
@@ -7624,6 +8195,208 @@ class AudioFormatConverterWindow(QWidget):
             
             # 关闭对话框
             dialog.accept()
+            
+    def delete_files_by_suffix(self, dialog):
+        """根据用户指定的后缀名删除文件"""
+        # 获取用户输入的后缀名
+        suffix_text = self.suffix_input.text().strip()
+        
+        if not suffix_text:
+            QMessageBox.warning(self, "输入错误", "请输入要删除的文件后缀名")
+            return
+        
+        # 解析后缀名列表，支持逗号分隔多个后缀名
+        suffixes = [s.strip().lower() for s in suffix_text.split(',') if s.strip()]
+        
+        if not suffixes:
+            QMessageBox.warning(self, "输入错误", "请输入有效的文件后缀名")
+            return
+        
+        # 记录开始搜索信息
+        folder_path = self.folder_input.text().strip()
+        suffix_list = ", ".join(suffixes)
+        self.append_log(f"开始搜索指定后缀名文件: 目录={folder_path}, 后缀名={suffix_list}")
+        
+        # 收集匹配后缀名的文件
+        files_to_delete = []
+        
+        # 获取要搜索的目录
+        folder_path = self.delete_dir_edit.text().strip()
+        if not folder_path or not os.path.exists(folder_path):
+            QMessageBox.warning(self, "路径错误", "请选择有效的文件夹路径")
+            return
+            
+        # 标准化路径以处理Windows路径分隔符
+        folder_path = os.path.normpath(folder_path)
+        
+        try:
+            # 检查是否包含子目录
+            include_subdirs = self.include_subdirs_check.isChecked()
+            
+            if include_subdirs:
+                # 遍历目录及其子目录
+                for root, dirs, files in os.walk(folder_path):
+                    for file in files:
+                        try:
+                            # 获取文件后缀名（不包含点）
+                            _, file_ext = os.path.splitext(file)
+                            file_ext = file_ext[1:].lower()  # 去掉点并转为小写
+                            
+                            # 检查文件后缀名是否匹配
+                            if file_ext in suffixes:
+                                # 确保添加的文件路径使用正确的路径分隔符
+                                file_path = os.path.normpath(os.path.join(root, file))
+                                files_to_delete.append(file_path)
+                        except UnicodeEncodeError:
+                            # 忽略无法处理的文件名
+                            continue
+            else:
+                # 只遍历当前目录
+                if os.path.exists(folder_path):
+                    try:
+                        for file in os.listdir(folder_path):
+                            file_path = os.path.join(folder_path, file)
+                            if os.path.isfile(file_path):
+                                try:
+                                    # 获取文件后缀名（不包含点）
+                                    _, file_ext = os.path.splitext(file)
+                                    file_ext = file_ext[1:].lower()  # 去掉点并转为小写
+                                    
+                                    # 检查文件后缀名是否匹配
+                                    if file_ext in suffixes:
+                                        # 确保添加的文件路径使用正确的路径分隔符
+                                        file_path = os.path.normpath(file_path)
+                                        files_to_delete.append(file_path)
+                                except UnicodeEncodeError:
+                                    # 忽略无法处理的文件名
+                                    continue
+                    except Exception as e:
+                        self.append_log(f"读取目录文件出错: {str(e)}")
+                        QMessageBox.warning(self, "错误", f"读取目录文件出错: {str(e)}")
+                        return
+        except Exception as e:
+            try:
+                self.append_log(f"搜索文件出错: {str(e)}")
+            except UnicodeEncodeError:
+                self.append_log(f"搜索文件出错: [错误信息包含特殊字符]")
+            QMessageBox.warning(self, "错误", f"搜索文件出错: {str(e)}")
+            return
+        
+        if not files_to_delete:
+            suffix_list = ", ".join(suffixes)
+            self.append_log(f"搜索完成: 没有找到后缀名为 {suffix_list} 的文件")
+            QMessageBox.information(self, "提示", f"没有找到后缀名为 {suffix_list} 的文件")
+            return
+        
+        # 记录搜索完成结果
+        self.append_log(f"搜索完成: 找到 {len(files_to_delete)} 个需要删除的文件")
+        
+        # 显示找到的文件列表，并提供确认删除选项
+        self.show_files_to_delete(files_to_delete, suffixes, dialog)
+    
+    def show_files_to_delete(self, files_to_delete, suffixes, dialog):
+        """显示找到的文件列表对话框"""
+        # 创建文件列表对话框
+        files_dialog = QDialog(self)
+        files_dialog.setWindowTitle("找到的文件")
+        files_dialog.setMinimumSize(800, 600)
+        
+        # 设置布局
+        layout = QVBoxLayout(files_dialog)
+        
+        # 创建文件列表标签
+        suffix_list = ", ".join(suffixes)
+        header_label = QLabel(f"找到 {len(files_to_delete)} 个后缀名为 {suffix_list} 的文件：")
+        header_label.setWordWrap(True)
+        layout.addWidget(header_label)
+        
+        # 创建滚动区域
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # 创建文件列表容器
+        files_container = QWidget()
+        files_layout = QVBoxLayout(files_container)
+        
+        # 添加文件列表
+        for file_path in files_to_delete:
+            try:
+                file_label = QLabel(file_path)
+                file_label.setWordWrap(True)
+                file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+                files_layout.addWidget(file_label)
+            except UnicodeEncodeError:
+                # 忽略无法显示的文件名
+                continue
+        
+        # 添加垂直分隔空间
+        files_layout.addStretch()
+        
+        # 将容器添加到滚动区域
+        scroll_area.setWidget(files_container)
+        
+        # 创建按钮区域
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+        
+        # 添加取消按钮
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(files_dialog.reject)
+        buttons_layout.addWidget(cancel_btn)
+        
+        # 添加删除按钮
+        delete_btn = QPushButton("删除所选文件")
+        delete_btn.setStyleSheet("background-color: #f44336; color: white;")
+        delete_btn.clicked.connect(lambda: self.perform_delete_files(files_to_delete, suffixes, files_dialog, dialog))
+        buttons_layout.addWidget(delete_btn)
+        
+        layout.addLayout(buttons_layout)
+        
+        # 显示对话框
+        files_dialog.exec()
+        
+    def perform_delete_files(self, files_to_delete, suffixes, files_dialog, parent_dialog):
+        """执行文件删除操作"""
+        # 确认删除
+        suffix_list = ", ".join(suffixes)
+        reply = QMessageBox.question(self, "最终确认删除", 
+                                    f"确定要删除所有后缀名为 {suffix_list} 的 {len(files_to_delete)} 个文件吗？\n此操作不可恢复！",
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                                    QMessageBox.StandardButton.No)
+        
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        
+        # 关闭文件列表对话框
+        files_dialog.accept()
+        
+        # 执行删除操作
+        deleted_count = 0
+        failed_count = 0
+        
+        # 记录开始删除信息
+        total_files = len(files_to_delete)
+        self.append_log(f"开始删除文件: 总共 {total_files} 个文件")
+        
+        for file_path in files_to_delete:
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+                self.append_log(f"已删除文件 (按后缀名): {file_path}")
+            except Exception as e:
+                failed_count += 1
+                self.append_log(f"删除文件失败: {file_path}, 错误: {str(e)}")
+        
+        # 记录删除结果
+        self.append_log(f"删除操作完成: 成功删除 {deleted_count} 个文件，删除失败 {failed_count} 个文件")
+        
+        QMessageBox.information(self, "删除完成", 
+                              f"删除操作完成:\n成功删除 {deleted_count} 个文件\n删除失败 {failed_count} 个文件")
+        
+        # 关闭父对话框
+        if parent_dialog:
+            parent_dialog.accept()
     
     def on_duplicate_search_completed(self, success, message):
         """重复文件查找完成后的处理"""
@@ -7709,6 +8482,23 @@ class AudioFormatConverterWindow(QWidget):
             self.log_display.insertPlainText(log_entry)
         # 自动滚动到底部
         self.log_display.moveCursor(QTextCursor.MoveOperation.End)
+        
+    def update_current_processed_file(self, file_path):
+        """更新当前正在处理的文件名"""
+        # 更新进度条格式以显示当前处理的文件
+        try:
+            self.progress_bar.setFormat(f"正在计算: {os.path.basename(file_path)}")
+        except UnicodeEncodeError:
+            self.progress_bar.setFormat(f"正在计算: [文件名包含特殊字符]")
+        
+    def append_duplicate_file_log(self, duplicate_files):
+        """实时添加发现的重复文件日志"""
+        # 确保中文文件名正确显示
+        try:
+            base_names = [os.path.basename(file) for file in duplicate_files]
+            self.append_log(f"发现重复文件: {', '.join(base_names)}")
+        except UnicodeEncodeError:
+            self.append_log(f"发现重复文件组")
     
     def conversion_finished(self, success, message):
         """转换完成后的处理"""
@@ -7768,6 +8558,15 @@ class AudioFormatConverterWindow(QWidget):
                     self.ffmpeg_input.setText(settings['ffmpeg_path'])
                 if 'overwrite_existing' in settings:
                     self.overwrite_checkbox.setChecked(settings['overwrite_existing'])
+            
+            # 检查文件夹路径是否有效，如果有效则启用相关按钮
+            folder_path = self.folder_input.text().strip()
+            if folder_path and os.path.exists(folder_path):
+                self.scan_btn.setEnabled(True)
+                self.delete_by_suffix_btn.setEnabled(True)
+            else:
+                self.scan_btn.setEnabled(False)
+                self.delete_by_suffix_btn.setEnabled(False)
         except Exception as e:
             print(f"加载设置时出错: {e}")
     
@@ -7808,6 +8607,964 @@ class AudioFormatConverterWindow(QWidget):
             if self in self.parent.child_windows:
                 self.parent.child_windows.remove(self)
         event.accept()
+
+
+
+# ===== 应用程序打包图形界面 =====
+class PackagingThread(QThread):
+    """
+    用于在单独线程中执行打包操作的QThread子类
+    """
+    # 定义信号，用于发送打包进度和结果
+    progress_updated = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+    output_received = pyqtSignal(str)
+    
+    def __init__(self, python_file, app_name, is_single_file, spec_file=""):
+        super().__init__()
+        self.python_file = python_file
+        self.app_name = app_name
+        self.is_single_file = is_single_file
+        self.spec_file = spec_file  # 添加spec文件路径参数
+        self.overwrite_output = True  # 默认启用覆盖输出
+    
+    def _verify_spec_file_entry_point(self):
+        """
+        验证spec文件中的入口点文件是否存在
+        这个方法会检查spec文件中的入口点并通过信号通知问题
+        """
+        try:
+            # 读取spec文件内容
+            with open(self.spec_file, 'r', encoding='utf-8') as f:
+                spec_content = f.read()
+                
+            # 尝试提取Analysis部分中的第一个文件路径
+            import re
+            analysis_match = re.search(r'a\s*=\s*Analysis\(\s*\[([^\]]+)\]', spec_content)
+            
+            if analysis_match:
+                entry_points_str = analysis_match.group(1)
+                # 提取第一个文件路径（通常是主要的入口点）
+                entry_point_match = re.search(r'[\\"\']([^\\"\']+\.py)[\\"\']', entry_points_str)
+                
+                if entry_point_match:
+                    entry_point_path = entry_point_match.group(1)
+                    
+                    # 检查路径是否为绝对路径
+                    if not os.path.isabs(entry_point_path):
+                        # 假设相对路径是相对于spec文件所在的目录
+                        spec_dir = os.path.dirname(self.spec_file)
+                        entry_point_path = os.path.join(spec_dir, entry_point_path)
+                    
+                    # 检查文件是否存在
+                    if not os.path.exists(entry_point_path):
+                        error_msg = f"spec文件中指定的入口点文件不存在：\n{entry_point_path}\n\n" \
+                                  "请修改spec文件或确保该文件存在于指定位置。"
+                        self.finished.emit(False, error_msg)
+                        raise FileNotFoundError(error_msg)
+        except Exception as e:
+            # 如果解析失败或文件不存在，发出错误信号
+            self.finished.emit(False, f"验证spec文件时出错：{str(e)}")
+            raise
+        
+    def run(self):
+        """
+        运行打包操作
+        """
+        try:
+            self.progress_updated.emit("开始打包应用程序...")
+            
+            # 确保package_infor目录存在
+            package_infor_dir = os.path.join(os.getcwd(), "package_infor")
+            if not os.path.exists(package_infor_dir):
+                os.makedirs(package_infor_dir)
+                
+            # 构建PyInstaller命令
+            # 检查是否指定了spec文件
+            if self.spec_file:
+                # 再次验证spec文件中的入口点文件是否存在
+                self._verify_spec_file_entry_point()
+                # 使用现有的spec文件进行打包
+                self.progress_updated.emit(f"使用现有的spec文件: {self.spec_file}")
+                cmd = [
+                    sys.executable, '-m', 'PyInstaller', self.spec_file,
+                    '--clean',  # 清理临时文件
+                    '--workpath', os.path.join(package_infor_dir, "build"),  # 指定临时文件路径
+                    '--distpath', os.path.join(package_infor_dir, "dist")    # 指定输出目录路径
+                ]
+                # 如果设置了覆盖现有目录，添加-y选项
+                if getattr(self, 'overwrite_output', True):
+                    cmd.append('-y')
+            else:
+                # 使用Python文件进行打包，自动生成spec文件
+                # 添加优化参数以减少exe启动时间
+                cmd = [
+                    sys.executable, '-m', 'PyInstaller', self.python_file,
+                    '--name', self.app_name, '--windowed',
+                    '--optimize=2',  # 启用最大优化级别
+                    '--noupx',       # 不使用UPX压缩，加快启动速度
+                    '--clean',       # 清理临时文件，确保每次打包都是全新的
+                    '--workpath', os.path.join(package_infor_dir, "build"),  # 指定临时文件路径
+                    '--distpath', os.path.join(package_infor_dir, "dist"),    # 指定输出目录路径
+                    '--specpath', package_infor_dir                           # 指定spec文件路径
+                ]
+                # 如果设置了覆盖现有目录，添加-y选项
+                if getattr(self, 'overwrite_output', True):
+                    cmd.append('-y')
+                
+                # 根据选择添加打包方式参数
+                if self.is_single_file:
+                    cmd.append('--onefile')
+            
+            # 执行打包命令 - 不使用shell=True，以提高安全性和稳定性
+            try:
+                # 使用更宽松的编码处理Windows系统上的各种字符
+                # cp936是Windows中文系统常用的编码，能够处理更多中文和特殊字符
+                process = subprocess.Popen(
+                    cmd,
+                    shell=False,  # 不使用shell=True
+                    stdout=subprocess.PIPE,  # 捕获标准输出
+                    stderr=subprocess.STDOUT,  # 合并标准错误到标准输出
+                    text=True,  # 以文本模式读取输出
+                    encoding='cp936',  # 使用cp936编码代替utf-8
+                    errors='replace'  # 遇到无法解码的字符时替换为替换字符
+                )
+                
+                # 实时读取输出并发送信号
+                output_lines = []
+                while True:
+                    try:
+                        output = process.stdout.readline()
+                        if output == '' and process.poll() is not None:
+                            # 检查是否还有剩余输出
+                            remaining_output = process.stdout.read()
+                            if remaining_output:
+                                for line in remaining_output.split('\n'):
+                                    if line.strip():
+                                        output_lines.append(line.strip())
+                                        self.output_received.emit(line.strip())
+                            break
+                        if output:
+                            clean_output = output.strip()
+                            output_lines.append(clean_output)
+                            self.output_received.emit(clean_output)
+                    except Exception as read_error:
+                        # 捕获读取输出时可能出现的错误
+                        error_msg = f"读取输出时出错: {str(read_error)}"
+                        self.output_received.emit(error_msg)
+                        break
+                
+                # 检查进程退出码
+                if process.returncode is not None and process.returncode != 0:
+                    # 收集完整的错误信息
+                    error_info = f"打包失败，退出码: {process.returncode}\n"
+                    # 显示最后50行输出，以便更全面地了解错误
+                    error_info += "\n".join(output_lines[-50:])
+                    # 强调重要的错误信息
+                    error_info += "\n\n========= 重要提示 ========="
+                    error_info += "\n请仔细检查以上错误信息，特别关注包含 'ERROR' 或 'Traceback' 的行。"
+                    error_info += "\n常见问题可能是：缺少依赖库、Python文件路径错误、spec文件配置不正确等。"
+                    error_info += "\n=========================="
+                    raise subprocess.CalledProcessError(process.returncode, cmd, error_info)
+            except subprocess.SubprocessError as subprocess_error:
+                # 捕获子进程相关的错误
+                self.progress_updated.emit("打包过程中子进程出错")
+                # 安全地处理subprocess_error，避免在格式化时出现类型错误
+                try:
+                    error_str = str(subprocess_error)
+                except Exception:
+                    # 如果直接str()失败，尝试手动构建错误信息
+                    error_str = f"子进程错误，类型: {type(subprocess_error).__name__}"
+                    if hasattr(subprocess_error, 'cmd'):
+                        error_str += f", 命令: {subprocess_error.cmd}"
+                    if hasattr(subprocess_error, 'returncode'):
+                        error_str += f", 退出码: {subprocess_error.returncode}"
+                self.finished.emit(False, f"子进程错误: {error_str}")
+                return
+            
+            # 确定打包后的文件路径
+            try:
+                # 确定PyInstaller实际使用的输出目录路径
+                # 优先使用命令中指定的distpath
+                package_infor_dir = os.path.join(os.getcwd(), "package_infor")
+                default_dist_path = os.path.join(package_infor_dir, 'dist')
+                
+                # 根据打包类型构建文件或目录路径
+                if self.is_single_file:
+                    package_path = os.path.join(default_dist_path, f'{self.app_name}.exe')
+                else:
+                    package_path = os.path.join(default_dist_path, self.app_name)
+                
+                # 如果默认路径不存在，尝试其他可能的位置
+                possible_paths = [package_path]
+                if not os.path.exists(package_path):
+                    # 尝试当前工作目录下的dist目录
+                    alt_dist_path = os.path.join(os.getcwd(), 'dist')
+                    if self.is_single_file:
+                        possible_paths.append(os.path.join(alt_dist_path, f'{self.app_name}.exe'))
+                    else:
+                        possible_paths.append(os.path.join(alt_dist_path, self.app_name))
+                
+                # 遍历所有可能的路径，找到第一个存在的路径
+                found_path = None
+                for path in possible_paths:
+                    if os.path.exists(path):
+                        found_path = path
+                        break
+                
+                # 如果没有找到任何路径，抛出异常
+                if found_path is None:
+                    paths_str = "\n".join(possible_paths)
+                    raise FileNotFoundError(f"打包后的文件不存在。\n尝试的路径：\n{paths_str}")
+                
+                # 使用找到的实际路径
+                package_path = found_path
+                
+                self.progress_updated.emit("应用程序打包成功！")
+                self.finished.emit(True, package_path)
+            except FileNotFoundError as file_error:
+                self.progress_updated.emit("打包成功但文件未找到")
+                self.finished.emit(False, f"文件未找到: {str(file_error)}")
+        except subprocess.CalledProcessError as e:
+            self.progress_updated.emit("打包失败")
+            # 提供更详细的错误信息
+            error_details = f"打包命令执行失败: {str(e)}"
+            if hasattr(e, 'output') and e.output:
+                error_details += f"\n\n详细输出:\n{e.output}"
+            self.finished.emit(False, error_details)
+        except Exception as e:
+            self.progress_updated.emit("打包过程中发生错误")
+            # 捕获所有其他异常并提供详细信息
+            import traceback
+            error_traceback = traceback.format_exc()
+            error_msg = f"打包过程中发生错误: {str(e)}\n\n详细错误信息:\n{error_traceback}"
+            self.finished.emit(False, error_msg)
+    
+    def __del__(self):
+        """
+        确保线程在对象被删除时停止
+        """
+        self.wait()
+
+class PackageAppGUI(QMainWindow):
+    """
+    应用程序打包图形界面类
+    """
+    def __init__(self):
+        super().__init__()
+        self.python_file = ''  # 初始化python_file属性
+        self.save_path = ""
+        self.spec_file = ""  # 存储spec文件路径
+        self.use_existing_spec = False  # 是否使用现有spec文件
+        self.overwrite_output = True  # 是否覆盖现有输出目录（默认为True）
+        # 设置配置文件目录和路径（使用相对路径）
+        self.config_dir = "package_infor"
+        self.config_file = os.path.join(self.config_dir, "package_settings.pkl")
+        self.init_ui()
+        # 加载保存的设置
+        self.load_settings()
+        
+        # 初始化打包线程
+        self.packaging_thread = None
+        
+    def init_ui(self):
+        """
+        初始化用户界面
+        """
+        # 设置窗口标题和大小
+        self.setWindowTitle("应用程序打包工具_designed_by_wwq")
+        self.setMinimumSize(700, 600)  # 大大增加窗口宽度
+        self.resize(700, 600)
+        
+        # 创建中心部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # 创建主布局
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(12, 12, 12, 12)  # 减小内边距
+        main_layout.setSpacing(12)  # 减小间距
+        
+        # 创建一个包含多个设置的水平布局
+        settings_container = QWidget()
+        settings_layout = QHBoxLayout(settings_container)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
+        settings_layout.setSpacing(10)
+        
+        # 左侧设置区域
+        left_settings = QWidget()
+        left_layout = QVBoxLayout(left_settings)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        
+        # 应用程序入口文件选择
+        file_layout = QHBoxLayout()
+        file_label = QLabel("Python入口文件:")
+        self.file_input = QLineEdit()
+        self.file_input.setReadOnly(True)
+        self.file_input.setPlaceholderText("请选择要打包的Python文件")
+        browse_file_button = QPushButton("浏览...")
+        browse_file_button.setMinimumWidth(80)
+        browse_file_button.clicked.connect(self.browse_python_file)
+        file_layout.addWidget(file_label)
+        file_layout.addWidget(self.file_input, 1)  # 让输入框占据更多空间
+        file_layout.addWidget(browse_file_button)
+        left_layout.addLayout(file_layout)
+
+        # 应用名称输入
+        name_layout = QHBoxLayout()
+        name_label = QLabel("应用程序名称:")
+        self.name_input = QLineEdit()
+        self.name_input.setPlaceholderText("请输入应用程序名称")
+        name_layout.addWidget(name_label)
+        name_layout.addWidget(self.name_input, 1)  # 让输入框占据更多空间
+        left_layout.addLayout(name_layout)
+        
+        # 右侧设置区域
+        right_settings = QWidget()
+        right_layout = QVBoxLayout(right_settings)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        
+        # 保存路径选择
+        path_layout = QHBoxLayout()
+        path_label = QLabel("保存路径:")
+        self.path_input = QLineEdit()
+        self.path_input.setReadOnly(True)
+        browse_button = QPushButton("浏览...")
+        browse_button.setMinimumWidth(80)
+        browse_button.clicked.connect(self.browse_save_path)
+        path_layout.addWidget(path_label)
+        path_layout.addWidget(self.path_input, 1)  # 让输入框占据更多空间
+        path_layout.addWidget(browse_button)
+        right_layout.addLayout(path_layout)
+        
+        # 添加左右设置区域到容器
+        settings_layout.addWidget(left_settings, 1)
+        settings_layout.addWidget(right_settings, 1)
+        main_layout.addWidget(settings_container)
+        
+        # 高级选项区域 - 横向排列
+        advanced_options = QWidget()
+        advanced_layout = QHBoxLayout(advanced_options)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.setSpacing(10)
+        
+        # 打包方式选择 - 改为横向
+        package_group = QGroupBox("打包方式")
+        package_layout = QHBoxLayout()
+        
+        self.package_group = QButtonGroup()
+        
+        self.single_file_radio = QRadioButton("单一可执行文件 (.exe)")
+        self.single_file_radio.setChecked(True)
+        self.folder_radio = QRadioButton("文件夹形式 (包含多个文件)")
+        
+        self.package_group.addButton(self.single_file_radio)
+        self.package_group.addButton(self.folder_radio)
+        
+        package_layout.addWidget(self.single_file_radio)
+        package_layout.addWidget(self.folder_radio)
+        package_group.setLayout(package_layout)
+        advanced_layout.addWidget(package_group, 1)
+        
+        # Spec文件选择和覆盖输出选项组合成一个区域
+        options_group = QGroupBox("选项")
+        options_layout = QVBoxLayout()
+        
+        # Spec文件选择
+        spec_layout = QHBoxLayout()
+        self.spec_checkbox = QCheckBox("使用现有spec文件")
+        self.spec_checkbox.stateChanged.connect(self.toggle_spec_selection)
+        self.spec_input = QLineEdit()
+        self.spec_input.setReadOnly(True)
+        self.spec_input.setPlaceholderText("请选择spec文件")
+        self.spec_input.setEnabled(False)  # 初始禁用
+        browse_spec_button = QPushButton("浏览...")
+        browse_spec_button.setMinimumWidth(80)
+        browse_spec_button.clicked.connect(self.browse_spec_file)
+        browse_spec_button.setEnabled(False)  # 初始禁用
+        
+        spec_layout.addWidget(self.spec_checkbox)
+        spec_layout.addWidget(self.spec_input, 1)
+        spec_layout.addWidget(browse_spec_button)
+        options_layout.addLayout(spec_layout)
+        
+        # 覆盖输出目录选项
+        overwrite_layout = QHBoxLayout()
+        overwrite_label = QLabel("高级选项:")
+        self.overwrite_checkbox = QCheckBox("覆盖现有输出目录")
+        self.overwrite_checkbox.setChecked(True)  # 默认为选中
+        self.overwrite_checkbox.stateChanged.connect(self.on_overwrite_checkbox_changed)
+        overwrite_layout.addWidget(overwrite_label)
+        overwrite_layout.addWidget(self.overwrite_checkbox, 1)
+        options_layout.addLayout(overwrite_layout)
+        
+        options_group.setLayout(options_layout)
+        advanced_layout.addWidget(options_group, 1)
+        
+        main_layout.addWidget(advanced_options)
+        
+        # 按钮布局
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(15)
+        button_layout.setContentsMargins(0, 5, 0, 5)
+        self.package_button = QPushButton("开始打包")
+        self.package_button.setMinimumHeight(36)
+        self.package_button.clicked.connect(self.start_package)
+        self.save_settings_button = QPushButton("保存设置")
+        self.save_settings_button.setMinimumHeight(36)
+        self.save_settings_button.clicked.connect(self.save_settings)
+        self.exit_button = QPushButton("退出")
+        self.exit_button.setMinimumHeight(36)
+        self.exit_button.clicked.connect(self.close)
+        
+        button_layout.addWidget(self.package_button, 1)  # 均分空间
+        button_layout.addWidget(self.save_settings_button, 1)  # 均分空间
+        button_layout.addWidget(self.exit_button, 1)     # 均分空间
+        main_layout.addLayout(button_layout)
+        
+        # 添加一个文本框用于显示打包过程信息
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setPlaceholderText("打包过程信息将显示在这里...")
+        self.output_text.setMinimumHeight(250)  # 增加输出框高度，显示更多信息
+        main_layout.addWidget(self.output_text)
+        
+        # 状态标签
+        self.status_label = QLabel("就绪")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.status_label)
+        
+        # 美化UI
+        self.setup_styles()
+    
+    def browse_python_file(self):
+        """
+        浏览并选择要打包的Python文件
+        """
+        # 打开文件选择对话框，过滤Python文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择Python文件", os.getcwd(), "Python Files (*.py)"
+        )
+        
+        if file_path:
+            self.python_file = file_path
+            self.file_input.setText(file_path)
+            
+            # 如果应用程序名称为空，自动从文件名填充
+            if not self.name_input.text().strip():
+                file_name = os.path.basename(file_path)
+                app_name = os.path.splitext(file_name)[0]
+                self.name_input.setText(app_name)
+
+    def toggle_spec_selection(self, state):
+        """
+        切换spec文件选择的启用状态
+        
+        Args:
+            state: 复选框的状态
+        """
+        enabled = state == Qt.CheckState.Checked.value
+        self.spec_input.setEnabled(enabled)
+        
+        # 如果启用了spec文件选择，显示警告提醒用户确认spec文件内容
+        if enabled:
+            QMessageBox.information(
+                self, "注意",
+                "使用现有的spec文件时，请确保spec文件中指定的入口点文件路径正确！\n\n"
+                "PyInstaller会严格按照spec文件中的配置执行打包，不会使用界面上选择的Python文件。"
+            )
+
+        
+        # 查找spec文件的浏览按钮并设置其状态
+        # 我们通过遍历所有按钮并检查其父级来确定哪个是spec文件的浏览按钮
+        for child in self.findChildren(QPushButton):
+            if child.text() == "浏览...":
+                # 检查按钮的父级是否包含spec_input
+                parent = child.parent()
+                if parent and hasattr(parent, 'findChild'):
+                    spec_input_sibling = parent.findChild(QLineEdit)
+                    if spec_input_sibling and spec_input_sibling == self.spec_input:
+                        child.setEnabled(enabled)
+                        break
+        
+        self.use_existing_spec = enabled
+        
+    def browse_spec_file(self):
+        """
+        浏览并选择现有的spec文件
+        """
+        # 打开文件选择对话框，过滤spec文件
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择spec文件", os.getcwd(), "Spec Files (*.spec)"
+        )
+        
+        if file_path:
+            self.spec_file = file_path
+            self.spec_input.setText(file_path)
+            
+            # 验证spec文件中的入口点文件是否存在
+            self._verify_spec_file_entry_point_gui(file_path)
+            
+    def browse_save_path(self):
+        """
+        浏览并选择保存路径
+        """
+        # 打开目录选择对话框
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择保存路径", os.path.expanduser("~")
+        )
+        
+        if directory:
+            self.save_path = directory
+            self.path_input.setText(directory)
+    
+    def setup_styles(self):
+        """
+        设置美化的UI样式，使用Qt样式表设置各控件的外观
+        """
+        # 设置应用整体样式
+        self.setStyleSheet("""
+            QWidget {
+                font-family: "Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei";
+            }
+            QLabel {
+                color: #333;
+                font-size: 14px;
+            }
+            QLineEdit {
+                padding: 6px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                font-size: 14px;
+            }
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 8px 16px;
+                border: none;
+                border-radius: 4px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+            QGroupBox {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                margin-top: 10px;
+                padding: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px;
+                font-weight: bold;
+                color: #333;
+            }
+            QRadioButton {
+                color: #333;
+                font-size: 14px;
+                padding: 4px;
+            }
+        """)
+        
+        # 设置按钮颜色
+        palette = self.package_button.palette()
+        palette.setColor(QPalette.ColorRole.Button, QColor(76, 175, 80))
+        palette.setColor(QPalette.ColorRole.ButtonText, QColor(255, 255, 255))
+        self.package_button.setPalette(palette)
+        self.exit_button.setPalette(palette)
+    
+    def package_app(self):
+        """
+        使用PyInstaller打包应用程序（在线程中执行）
+        """
+        try:
+            app_name = self.name_input.text().strip()
+            if not app_name:
+                QMessageBox.warning(self, "警告", "请输入应用程序名称")
+                return False, ""
+            
+            if not hasattr(self, 'python_file') or not self.python_file:
+                QMessageBox.warning(self, "警告", "请选择要打包的Python文件")
+                return False, ""
+            
+            if not self.save_path:
+                QMessageBox.warning(self, "警告", "请选择保存路径")
+                return False, ""
+            
+            # 禁用打包按钮，防止重复点击
+            self.package_button.setEnabled(False)
+            self.exit_button.setEnabled(False)
+            self.save_settings_button.setEnabled(False)
+            
+            # 清空之前的输出信息
+            self.output_text.setText("")
+            
+            # 确保即使在错误情况下，打包线程对象也是有效的
+            if not hasattr(self, 'packaging_thread') or self.packaging_thread is None or not self.packaging_thread.isFinished():
+                # 如果线程不存在、为None或未完成，则创建新线程
+                self.packaging_thread = PackagingThread(
+                    self.python_file,
+                    app_name,
+                    self.single_file_radio.isChecked(),
+                    self.spec_file if self.use_existing_spec else ""
+                )
+            else:
+                # 重新创建线程
+                self.packaging_thread = PackagingThread(
+                    self.python_file,
+                    app_name,
+                    self.single_file_radio.isChecked(),
+                    self.spec_file if self.use_existing_spec else ""
+                )
+            
+            # 连接信号和槽
+            self.packaging_thread.progress_updated.connect(self.update_status)
+            self.packaging_thread.output_received.connect(self.update_output)
+            self.packaging_thread.finished.connect(self.on_packaging_finished)
+            
+            # 启动线程
+            self.packaging_thread.start()
+            
+        except Exception as e:
+            self.status_label.setText(f"打包过程中发生错误: {str(e)}")
+            QMessageBox.critical(self, "错误", f"打包过程中发生错误: {str(e)}")
+            # 恢复按钮状态
+            self.package_button.setEnabled(True)
+            self.exit_button.setEnabled(True)
+            self.save_settings_button.setEnabled(True)
+            return False, ""
+        
+        return True, ""  # 返回成功表示线程已启动
+    
+
+
+    # 以下是GUI类中的方法
+    def _verify_spec_file_entry_point_gui(self, spec_file_path):
+        """
+        在GUI类中验证spec文件中的入口点文件是否存在
+        这个方法会向用户显示警告对话框
+        
+        Args:
+            spec_file_path: spec文件的路径
+        """
+        try:
+            # 读取spec文件内容
+            with open(spec_file_path, 'r', encoding='utf-8') as f:
+                spec_content = f.read()
+                
+            # 尝试提取Analysis部分中的第一个文件路径
+            # 这是一个简单的解析方法，仅适用于标准格式的spec文件
+            import re
+            analysis_match = re.search(r'a\s*=\s*Analysis\(\s*\[([^\]]+)\]', spec_content)
+            
+            if analysis_match:
+                entry_points_str = analysis_match.group(1)
+                # 提取第一个文件路径（通常是主要的入口点）
+                entry_point_match = re.search(r'[\\"\']([^\\"\']+\.py)[\\"\']', entry_points_str)
+                
+                if entry_point_match:
+                    entry_point_path = entry_point_match.group(1)
+                    
+                    # 检查路径是否为绝对路径
+                    if not os.path.isabs(entry_point_path):
+                        # 假设相对路径是相对于spec文件所在的目录
+                        spec_dir = os.path.dirname(spec_file_path)
+                        entry_point_path = os.path.join(spec_dir, entry_point_path)
+                    
+                    # 检查文件是否存在
+                    if not os.path.exists(entry_point_path):
+                        QMessageBox.warning(
+                            self, "警告",
+                            f"spec文件中指定的入口点文件不存在：\n{entry_point_path}\n\n"
+                            "请修改spec文件或确保该文件存在于指定位置。"
+                        )
+        except Exception as e:
+            # 如果解析失败，显示警告但不阻止用户继续
+            self.status_label.setText(f"检查spec文件时出错：{str(e)}")
+            
+    def update_status(self, message):
+        """
+        更新状态标签
+        """
+        self.status_label.setText(message)
+        
+    def update_output(self, output):
+        """
+        更新打包过程输出信息，累积显示所有信息
+        """
+        try:
+            # 确保输出不为空
+            if not output or not output.strip():
+                return
+            
+            # 确保在主线程中更新UI
+            if QThread.currentThread() != self.thread():
+                # 如果不是主线程，则使用信号槽机制在主线程中更新
+                QMetaObject.invokeMethod(
+                    self,
+                    "update_output_slot",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, output)
+                )
+                return
+            
+            # 获取当前文本
+            current_text = self.output_text.toPlainText()
+            
+            # 如果当前文本不为空，添加换行符
+            if current_text:
+                updated_text = f"{current_text}\n{output}"
+            else:
+                updated_text = output
+            
+            # 限制输出文本长度，避免内存占用过多
+            # 先计算行数
+            lines = updated_text.split('\n')
+            max_lines = 200  # 增加保留的行数到200行，以便显示更多错误信息
+            
+            if len(lines) > max_lines:
+                # 只保留最后max_lines行
+                updated_text = '\n'.join(lines[-max_lines:])
+            
+            # 更新显示的文本
+            self.output_text.setText(updated_text)
+            
+            # 自动滚动到底部
+            self.output_text.verticalScrollBar().setValue(
+                self.output_text.verticalScrollBar().maximum()
+            )
+        except Exception as e:
+            # 防止在更新输出时出现问题导致整个应用崩溃
+            error_msg = f"更新输出时出错: {str(e)}"
+            print(error_msg)
+            # 尝试在UI中显示错误信息
+            try:
+                if QThread.currentThread() == self.thread():
+                    current_text = self.output_text.toPlainText()
+                    if current_text:
+                        self.output_text.setText(f"{current_text}\n{error_msg}")
+                    else:
+                        self.output_text.setText(error_msg)
+                else:
+                    # 如果不在主线程，则使用信号槽机制
+                    QMetaObject.invokeMethod(
+                        self, 
+                        "update_output_slot", 
+                        Qt.ConnectionType.QueuedConnection, 
+                        Q_ARG(str, error_msg)
+                    )
+            except:
+                # 如果仍然失败，至少记录到控制台
+                pass
+    
+    @pyqtSlot(str)
+    def update_output_slot(self, output):
+        """
+        用于在主线程中更新输出的槽函数
+        """
+        self.update_output(output)
+        
+    def on_packaging_finished(self, success, result):
+        """
+        处理打包完成事件
+        """
+        # 恢复按钮状态
+        self.package_button.setEnabled(True)
+        self.exit_button.setEnabled(True)
+        self.save_settings_button.setEnabled(True)
+        
+        if success:
+            # 打包成功，继续复制到指定路径
+            if not self.copy_to_path(result):
+                QMessageBox.warning(
+                    self, "警告", 
+                    "复制到指定路径失败，但应用程序已打包成功，可以在dist目录中找到文件。"
+                )
+        else:
+            # 打包失败，先将错误信息添加到输出文本框
+            try:
+                if self.output_text.toPlainText():
+                    self.output_text.append("\n\n==== 打包失败详细信息 ====")
+                self.output_text.append(result)
+                self.output_text.verticalScrollBar().setValue(
+                    self.output_text.verticalScrollBar().maximum()
+                )
+            except Exception as e:
+                print(f"更新输出文本失败: {str(e)}")
+            
+            # 然后显示错误对话框
+            # 将长错误信息截断，只在对话框中显示部分内容
+            if len(result) > 500:
+                dialog_result = result[:500] + "...\n\n(更多错误信息请查看下方输出文本框)"
+            else:
+                dialog_result = result
+            
+            QMessageBox.critical(self, "错误", dialog_result)
+    
+    def on_overwrite_checkbox_changed(self, state):
+        """
+        处理覆盖输出目录复选框的状态变化
+        
+        Args:
+            state: 复选框的状态
+        """
+        self.overwrite_output = (state == Qt.CheckState.Checked.value)
+        
+    def copy_to_path(self, source_path):
+        """
+        将打包后的文件复制到选择的保存路径
+        
+        Args:
+            source_path: 源文件路径
+            
+        Returns:
+            bool: 复制是否成功
+        """
+        try:
+            app_name = self.name_input.text().strip()
+            
+            # 检查源文件是否存在
+            if not os.path.exists(source_path):
+                QMessageBox.critical(self, "错误", f"源文件 '{source_path}' 不存在")
+                return False
+            
+            self.status_label.setText(f"正在复制文件到 {self.save_path}...")
+            QApplication.processEvents()  # 更新UI
+            
+            # 根据文件类型执行不同的复制操作
+            if os.path.isfile(source_path):
+                # 复制单个文件
+                destination_file = os.path.join(self.save_path, f'{app_name}.exe')
+                shutil.copy2(source_path, destination_file)
+                
+                # 创建一个简单的批处理文件来启动应用程序
+                batch_file = os.path.join(self.save_path, f'启动{app_name}.cmd')
+                with open(batch_file, 'w', encoding='utf-8') as f:
+                    f.write(f'@echo off\n"{destination_file}"\npause')
+                
+            else:
+                # 复制整个文件夹
+                destination_folder = os.path.join(self.save_path, app_name)
+                # 如果目标文件夹已存在，则先删除
+                if os.path.exists(destination_folder):
+                    shutil.rmtree(destination_folder)
+                shutil.copytree(source_path, destination_folder)
+            
+            self.status_label.setText(f"复制完成！{app_name}已成功复制到指定路径。")
+            QMessageBox.information(
+                self, "成功", 
+                f"应用程序已成功打包并复制到\n{self.save_path}\n\n" +
+                f"您可以前往该目录运行{app_name}。"
+            )
+            return True
+        except Exception as e:
+            self.status_label.setText(f"复制文件时出错")
+            QMessageBox.critical(self, "错误", f"复制文件时出错: {str(e)}")
+            return False
+    
+    def save_settings(self):
+        """
+        保存用户设置到配置文件，并显示保存成功提示
+        """
+        try:
+            # 确保配置文件目录存在
+            if not os.path.exists(self.config_dir):
+                os.makedirs(self.config_dir)
+                self.status_label.setText(f"创建配置目录: {self.config_dir}")
+                QApplication.processEvents()
+                
+            # 收集设置信息
+            settings = {
+                "app_name": self.name_input.text().strip(),
+                "save_path": self.save_path,
+                "is_single_file": self.single_file_radio.isChecked(),
+                "python_file": getattr(self, 'python_file', ''),
+                "spec_file": getattr(self, 'spec_file', ''),
+                "use_existing_spec": getattr(self, 'use_existing_spec', False),
+                "overwrite_output": getattr(self, 'overwrite_output', True)
+            }
+            
+            # 保存设置到文件
+            with open(self.config_file, 'wb') as f:
+                pickle.dump(settings, f)
+                
+            self.status_label.setText("设置已成功保存")
+            QMessageBox.information(self, "成功", "设置已成功保存到配置文件")
+            return True
+        except Exception as e:
+            self.status_label.setText(f"保存设置时出错: {str(e)}")
+            QMessageBox.critical(self, "错误", f"保存设置时出错: {str(e)}")
+            return False
+            
+    def load_settings(self):
+        """
+        从配置文件加载用户设置
+        """
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'rb') as f:
+                    settings = pickle.load(f)
+                    
+                # 恢复设置
+                if "app_name" in settings and settings["app_name"]:
+                    self.name_input.setText(settings["app_name"])
+                
+                if "python_file" in settings and settings["python_file"]:
+                    self.python_file = settings["python_file"]
+                    self.file_input.setText(settings["python_file"])
+                
+                if "save_path" in settings and settings["save_path"]:
+                    self.save_path = settings["save_path"]
+                    self.path_input.setText(settings["save_path"])
+                
+                if "is_single_file" in settings:
+                    if settings["is_single_file"]:
+                        self.single_file_radio.setChecked(True)
+                    else:
+                        self.folder_radio.setChecked(True)
+                        
+                # 恢复spec文件相关设置
+                if "spec_file" in settings:
+                    self.spec_file = settings["spec_file"]
+                    self.spec_input.setText(settings["spec_file"])
+                    
+                if "use_existing_spec" in settings:
+                    self.use_existing_spec = settings["use_existing_spec"]
+                    self.spec_checkbox.setChecked(settings["use_existing_spec"])
+                    # 触发toggle_spec_selection以正确设置UI状态
+                    self.toggle_spec_selection(
+                        Qt.CheckState.Checked.value if settings["use_existing_spec"] else Qt.CheckState.Unchecked.value
+                    )
+                
+                # 恢复覆盖输出目录设置
+                if "overwrite_output" in settings:
+                    self.overwrite_output = settings["overwrite_output"]
+                    self.overwrite_checkbox.setChecked(settings["overwrite_output"])
+                        
+                self.status_label.setText("已加载保存的设置")
+        except Exception as e:
+            self.status_label.setText(f"加载设置失败，将使用默认设置")
+    
+    def start_package(self):
+        """
+        开始打包流程
+        """
+        # 保存当前设置
+        self.save_settings()
+        
+        # 启动打包流程（在线程中执行）
+        self.package_app()
+        # 注意：打包完成后，会在on_packaging_finished中自动处理复制到指定路径的操作
+
 
 
 # ===== 应用程序设置对话框 =====
