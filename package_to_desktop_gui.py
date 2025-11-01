@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QWidget, 
     QRadioButton, QGroupBox, QButtonGroup, QTextEdit, QCheckBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, QThread, QObject, pyqtSignal, pyqtSlot, QMetaObject, Q_ARG
 from PyQt6.QtGui import QPalette, QColor
 
 
@@ -103,16 +103,21 @@ class PackagingThread(QThread):
                     cmd.append('-y')
             else:
                 # 使用Python文件进行打包，自动生成spec文件
-                # 添加优化参数以减少exe启动时间
+                # 添加优化参数和修复QtWidgets DLL加载问题的参数
                 cmd = [
                     sys.executable, '-m', 'PyInstaller', self.python_file,
                     '--name', self.app_name, '--windowed',
                     '--optimize=2',  # 启用最大优化级别
-                    '--noupx',       # 不使用UPX压缩，加快启动速度
+                    '--noupx',       # 不使用UPX压缩，避免DLL相关问题
                     '--clean',       # 清理临时文件，确保每次打包都是全新的
                     '--workpath', os.path.join(package_infor_dir, "build"),  # 指定临时文件路径
                     '--distpath', os.path.join(package_infor_dir, "dist"),    # 指定输出目录路径
-                    '--specpath', package_infor_dir                           # 指定spec文件路径
+                    '--specpath', package_infor_dir,                          # 指定spec文件路径
+                    # 添加PyQt6相关的hiddenimports参数
+                    '--hidden-import=PyQt6',
+                    '--hidden-import=PyQt6.QtWidgets',
+                    '--hidden-import=PyQt6.QtGui',
+                    '--hidden-import=PyQt6.QtCore'
                 ]
                 # 如果设置了覆盖现有目录，添加-y选项
                 if getattr(self, 'overwrite_output', True):
@@ -833,13 +838,13 @@ class PackageAppGUI(QMainWindow):
         
     def copy_to_path(self, source_path):
         """
-        将打包后的文件复制到选择的保存路径
+        将打包后的文件复制到选择的保存路径（移至单独线程执行以避免UI阻塞）
         
         Args:
             source_path: 源文件路径
             
         Returns:
-            bool: 复制是否成功
+            bool: 复制线程是否成功启动
         """
         try:
             app_name = self.name_input.text().strip()
@@ -849,39 +854,167 @@ class PackageAppGUI(QMainWindow):
                 QMessageBox.critical(self, "错误", f"源文件 '{source_path}' 不存在")
                 return False
             
+            # 创建复制文件的线程
+            self.copy_thread = QThread()
+            self.copy_worker = CopyFileWorker(source_path, self.save_path, app_name)
+            self.copy_worker.moveToThread(self.copy_thread)
+            
+            # 连接信号和槽
+            self.copy_thread.started.connect(self.copy_worker.run)
+            self.copy_worker.progress_updated.connect(self.update_copy_progress)
+            self.copy_worker.finished.connect(self.on_copy_finished)
+            self.copy_worker.finished.connect(self.copy_thread.quit)
+            self.copy_worker.finished.connect(self.copy_worker.deleteLater)
+            self.copy_thread.finished.connect(self.copy_thread.deleteLater)
+            
+            # 启动线程
+            self.copy_thread.start()
             self.status_label.setText(f"正在复制文件到 {self.save_path}...")
-            QApplication.processEvents()  # 更新UI
-            
-            # 根据文件类型执行不同的复制操作
-            if os.path.isfile(source_path):
-                # 复制单个文件
-                destination_file = os.path.join(self.save_path, f'{app_name}.exe')
-                shutil.copy2(source_path, destination_file)
-                
-                # 创建一个简单的批处理文件来启动应用程序
-                batch_file = os.path.join(self.save_path, f'启动{app_name}.cmd')
-                with open(batch_file, 'w', encoding='utf-8') as f:
-                    f.write(f'@echo off\n"{destination_file}"\npause')
-                
-            else:
-                # 复制整个文件夹
-                destination_folder = os.path.join(self.save_path, app_name)
-                # 如果目标文件夹已存在，则先删除
-                if os.path.exists(destination_folder):
-                    shutil.rmtree(destination_folder)
-                shutil.copytree(source_path, destination_folder)
-            
-            self.status_label.setText(f"复制完成！{app_name}已成功复制到指定路径。")
-            QMessageBox.information(
-                self, "成功", 
-                f"应用程序已成功打包并复制到\n{self.save_path}\n\n" +
-                f"您可以前往该目录运行{app_name}。"
-            )
             return True
         except Exception as e:
             self.status_label.setText(f"复制文件时出错")
             QMessageBox.critical(self, "错误", f"复制文件时出错: {str(e)}")
             return False
+    
+    def update_copy_progress(self, message):
+        """
+        更新文件复制进度
+        """
+        self.status_label.setText(message)
+        QApplication.processEvents()  # 定期更新UI
+    
+    def on_copy_finished(self, success, message):
+        """
+        处理文件复制完成事件
+        """
+        if success:
+            self.status_label.setText(message)
+            QMessageBox.information(
+                self, "成功", 
+                f"应用程序已成功打包并复制到\n{self.save_path}\n\n" +
+                f"您可以前往该目录运行应用程序。"
+            )
+        else:
+            self.status_label.setText(f"复制文件时出错")
+            QMessageBox.critical(self, "错误", message)
+
+
+class CopyFileWorker(QObject):
+    """
+    文件复制工作线程类
+    用于在后台线程中执行文件复制操作，避免阻塞UI
+    """
+    progress_updated = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, source_path, save_path, app_name):
+        super().__init__()
+        self.source_path = source_path
+        self.save_path = save_path
+        self.app_name = app_name
+    
+    def run(self):
+        """
+        执行文件复制操作
+        """
+        try:
+            # 根据文件类型执行不同的复制操作
+            if os.path.isfile(self.source_path):
+                # 复制单个文件
+                destination_file = os.path.join(self.save_path, f'{self.app_name}.exe')
+                
+                # 使用分块复制并显示进度
+                self.copy_file_with_progress(self.source_path, destination_file)
+                
+                # 创建一个简单的批处理文件来启动应用程序
+                batch_file = os.path.join(self.save_path, f'启动{self.app_name}.cmd')
+                with open(batch_file, 'w', encoding='utf-8') as f:
+                    f.write(f'@echo off\n"{destination_file}"\npause')
+            else:
+                # 复制整个文件夹
+                destination_folder = os.path.join(self.save_path, self.app_name)
+                # 如果目标文件夹已存在，则先删除
+                if os.path.exists(destination_folder):
+                    shutil.rmtree(destination_folder)
+                
+                # 使用自定义的目录复制函数，支持进度反馈
+                self.copy_directory_with_progress(self.source_path, destination_folder)
+            
+            self.finished.emit(True, f"复制完成！{self.app_name}已成功复制到指定路径。")
+        except Exception as e:
+            self.finished.emit(False, f"复制文件时出错: {str(e)}")
+    
+    def copy_file_with_progress(self, src, dst):
+        """
+        分块复制文件并显示进度
+        """
+        buffer_size = 65536  # 64KB缓冲区
+        total_size = os.path.getsize(src)
+        copied_size = 0
+        
+        with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+            while True:
+                buffer = fsrc.read(buffer_size)
+                if not buffer:
+                    break
+                fdst.write(buffer)
+                copied_size += len(buffer)
+                
+                # 每复制一定量的数据后更新进度
+                if copied_size % (buffer_size * 10) == 0:
+                    progress_percent = min(100, int(copied_size / total_size * 100))
+                    self.progress_updated.emit(
+                        f"正在复制文件到 {self.save_path}... {progress_percent}%"
+                    )
+    
+    def copy_directory_with_progress(self, src, dst):
+        """
+        复制目录并显示进度
+        """
+        # 先计算总文件大小，用于显示进度
+        total_size = 0
+        for root, _, files in os.walk(src):
+            for file in files:
+                file_path = os.path.join(root, file)
+                total_size += os.path.getsize(file_path)
+        
+        # 创建目标目录
+        os.makedirs(dst)
+        
+        # 复制文件
+        copied_size = 0
+        for root, dirs, files in os.walk(src):
+            # 创建对应的子目录
+            for dir_name in dirs:
+                src_dir = os.path.join(root, dir_name)
+                rel_path = os.path.relpath(src_dir, src)
+                dst_dir = os.path.join(dst, rel_path)
+                os.makedirs(dst_dir, exist_ok=True)
+            
+            # 复制文件
+            for file in files:
+                src_file = os.path.join(root, file)
+                rel_path = os.path.relpath(src_file, src)
+                dst_file = os.path.join(dst, rel_path)
+                
+                # 使用分块复制
+                buffer_size = 65536  # 64KB缓冲区
+                file_size = os.path.getsize(src_file)
+                
+                with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
+                    while True:
+                        buffer = fsrc.read(buffer_size)
+                        if not buffer:
+                            break
+                        fdst.write(buffer)
+                        copied_size += len(buffer)
+                        
+                        # 每复制一定量的数据后更新进度
+                        if copied_size % (buffer_size * 10) == 0:
+                            progress_percent = min(100, int(copied_size / total_size * 100))
+                            self.progress_updated.emit(
+                                f"正在复制文件到 {self.save_path}... {progress_percent}%"
+                            )
     
     def save_settings(self):
         """
@@ -965,6 +1098,35 @@ class PackageAppGUI(QMainWindow):
                 self.status_label.setText("已加载保存的设置")
         except Exception as e:
             self.status_label.setText(f"加载设置失败，将使用默认设置")
+    
+    def save_settings(self):
+        """
+        保存当前设置到配置文件
+        创建配置目录（如果不存在）并显示保存成功提示
+        """
+        try:
+            # 创建配置目录（如果不存在）
+            if not os.path.exists(self.config_dir):
+                os.makedirs(self.config_dir)
+                
+            # 收集需要保存的设置
+            settings = {
+                "app_name": self.name_input.text().strip(),
+                "python_file": self.python_file,
+                "save_path": self.save_path,
+                "is_single_file": self.single_file_radio.isChecked(),
+                "spec_file": self.spec_file,
+                "use_existing_spec": self.use_existing_spec,
+                "overwrite_output": self.overwrite_output
+            }
+            
+            # 保存设置到文件
+            with open(self.config_file, 'wb') as f:
+                pickle.dump(settings, f)
+                
+            self.status_label.setText("设置已保存")
+        except Exception as e:
+            self.status_label.setText(f"保存设置失败: {str(e)}")
     
     def start_package(self):
         """

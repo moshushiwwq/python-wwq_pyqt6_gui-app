@@ -35,13 +35,14 @@ from PyQt6.QtWidgets import (
     QFileDialog, QLineEdit, QDialog, QGroupBox,
     QFormLayout, QSpinBox, QSizePolicy, QFrame, QComboBox,
     QToolButton, QSystemTrayIcon, QStyle, QMenu, QScrollArea,
-    QTreeView, QCheckBox, QTableView, QHeaderView, QAbstractItemView, QButtonGroup, QRadioButton
+    QTreeView, QCheckBox, QTableView, QHeaderView, QAbstractItemView, QButtonGroup, QRadioButton,
+    QListWidget
 )
 # 在PyQt6中，QStandardItem和QStandardItemModel位于QtGui模块
 from PyQt6.QtGui import QStandardItem, QStandardItemModel
 from PyQt6.QtGui import QAction, QTextCursor
 from PyQt6.QtGui import QFont, QPainter, QPen, QBrush, QColor , QIcon , QPixmap, QGuiApplication, QRadialGradient, QPalette, QTextDocument
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, pyqtSignal, pyqtSlot, QSettings, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QThread, QObject, pyqtSignal, pyqtSlot, QSettings, QRectF, QPointF
 
 # ===== 设置日志配置 =====
 import os
@@ -325,8 +326,19 @@ logger.addHandler(console_handler)
 # ===== 版本历史信息 =====
 VERSION_HISTORY = [
     {
+        "version": "1.1.0",
+        "date": "2025-10-06",
+        "features": [
+            "统一在所有窗口标题中添加设计标识",
+            "添加应用程序打包功能",
+            "修复PyQt相关导入错误",
+            "优化线程销毁逻辑",
+            "添加所有应用程序卡片：2048游戏、贪吃蛇游戏、小恐龙游戏、俄罗斯方块、小说下载器、视频下载器、音频格式转换工具、应用程序打包工具"
+        ]
+    },
+    {
         "version": "1.0.0",
-        "date": "2024-04-25",
+        "date": "2025-09-25",
         "features": [
             "优化俄罗斯方块游戏性能",
             "移除俄罗斯方块游戏音效功能",
@@ -336,7 +348,7 @@ VERSION_HISTORY = [
     },
     {
         "version": "0.95",
-        "date": "2023-07-15",
+        "date": "2025-05-15",
         "features": [
             "添加小恐龙游戏",
             "添加俄罗斯方块游戏",
@@ -346,7 +358,7 @@ VERSION_HISTORY = [
     },
     {
         "version": "0.90",
-        "date": "2023-06-30",
+        "date": "2025-01-05",
         "features": [
             "添加小说下载器功能",
             "改进2048游戏界面",
@@ -355,7 +367,7 @@ VERSION_HISTORY = [
     },
     {
         "version": "0.85",
-        "date": "2023-06-15",
+        "date": "2025-01-01",
         "features": [
             "添加2048游戏",
             "添加贪吃蛇游戏",
@@ -1064,25 +1076,14 @@ class AppLauncher(QMainWindow):
             self.log_action(error_msg, "error")
 
     def run_package_app(self):
-        """运行应用程序打包工具，保留主窗口并显示进度条"""
-        # 移除对不存在的按钮属性的引用
-        pass
+        """运行应用程序打包工具，保留主窗口"""
         try:
-            # 创建进度条窗口
-            self.create_progress_window("启动应用程序打包工具")
-            
-            # 启动进度更新
-            self.update_progress()
-            
             # 创建应用程序打包工具窗口，保留主窗口可见
             self.package_window = PackageAppGUI()
             self.child_windows.append(self.package_window)
             
             # 设置窗口关闭事件
             self.package_window.destroyed.connect(self._on_child_window_close_without_event)
-            
-            # 完成进度显示
-            self.finalize_progress()
             
             # 显示应用程序打包工具窗口
             self.package_window.show()
@@ -1397,8 +1398,8 @@ class DinoGame(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
-        self.setWindowTitle("小恐龙游戏")
-        self.setMinimumSize(800, 400)
+        self.setWindowTitle("小恐龙游戏_designed_by_wwq")
+        self.setMinimumSize(800, 600)
         self.init_game()
         self.setup_ui()
         self.setup_styles()
@@ -1417,7 +1418,7 @@ class DinoGame(QWidget):
         
         # 创建游戏画布
         self.game_canvas = DinoGameCanvas(self)
-        self.game_canvas.setMinimumSize(800, 300)
+        self.game_canvas.setMinimumSize(800, 500)
         main_layout.addWidget(self.game_canvas)
         
         # 创建控制按钮区域
@@ -1829,14 +1830,15 @@ class DinoGameCanvas(QWidget):
         
         # 更新分数
         self.score += int((current_time - self.last_score_time) * 10)
-        self.last_score_time = current_time
+        # 不重置last_score_time，而是累加时间差
+        # 这样分数会随游戏进行稳定增加
         
         # 更新父窗口的分数显示
         if hasattr(self.parent, 'update_score'):
             self.parent.update_score(self.score)
         
-        # 随着分数增加，增加游戏难度 - 提高速度增加的幅度
-        self.game_speed = 6 + self.score // 800  # 每得800分增加一点速度，提高初始速度
+        # 随着分数增加，增加游戏难度 - 减缓速度增加的幅度
+        self.game_speed = 6 + self.score // 2000  # 每得2000分增加一点速度，减缓速度增长
         
         # 检查碰撞
         self.check_collision()
@@ -2242,8 +2244,8 @@ class TetrisGame(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent = parent
-        self.setWindowTitle("俄罗斯方块")
-        self.setMinimumSize(600, 600)
+        self.setWindowTitle("俄罗斯方块_designed_by_wwq")
+        self.setMinimumSize(800, 600)
         self.setup_ui()  # 先设置UI，确保所有UI组件都已创建
         self.init_game()  # 然后再初始化游戏数据
         self.setup_styles()
@@ -2860,7 +2862,14 @@ class TetrisGameCanvas(QWidget):
             self.update_score()
             
     def update_score(self):
-        """更新分数显示"""
+        """更新分数显示并根据等级调整游戏速度"""
+        # 根据消除的行数计算等级（每消除10行提升一级）
+        level = (self.lines_cleared // 10) + 1
+        
+        # 更新游戏速度
+        self.update_speed(level)
+        
+        # 更新UI显示
         if hasattr(self.parent, 'update_score'):
             self.parent.update_score(self.score, self.lines_cleared)
             
@@ -3065,7 +3074,7 @@ class Game2048(QMainWindow):
     def init_ui(self):
         """初始化用户界面"""
         # 设置窗口标题和尺寸
-        self.setWindowTitle('2048游戏')
+        self.setWindowTitle('2048游戏_designed_by_wwq')
         self.setGeometry(100, 100, self.width, self.height)
         
         # 创建主窗口部件
@@ -3615,7 +3624,7 @@ class SnakeGame(QMainWindow):
     def init_ui(self):
         """初始化用户界面"""
         # 设置窗口标题和尺寸
-        self.setWindowTitle('贪吃蛇游戏')
+        self.setWindowTitle('贪吃蛇游戏_designed_by_wwq')
         self.setGeometry(0, 0, self.width, self.height)
         
         # 将窗口显示在屏幕中央
@@ -4397,6 +4406,179 @@ class GameCanvas(QWidget):
 
 
 # ===== 小说下载器集成 =====
+# 多线程下载管理器，用于管理多个下载任务
+class DownloadManager:
+    """
+    下载管理器类，负责管理多个下载线程，协调并行下载任务
+    提供任务添加、状态跟踪、进度汇总等功能
+    """
+    def __init__(self, parent=None):
+        self.parent = parent
+        self.download_threads = []  # 存储所有下载线程
+        self.active_downloads = 0   # 当前活跃的下载任务数
+        self.completed_downloads = 0  # 已完成的下载任务数
+        self.total_downloads = 0    # 总下载任务数
+        self.is_all_complete = False  # 是否所有下载都已完成
+        self.is_batch_download = False  # 是否为批量下载模式
+    
+    def add_download(self, url, tag, attr_dict, choose_dict, file_path, total_chapters=None):
+        """
+        添加一个新的下载任务
+        Args:
+            url (str): 小说起始URL
+            tag (str): HTML标签
+            attr_dict (dict): 属性字典
+            choose_dict (list): 选择器列表
+            file_path (str): 保存文件路径
+            total_chapters (int, optional): 总章节数
+        """
+        # 创建下载线程
+        thread = DownloadThread(url, tag, attr_dict, choose_dict, file_path, total_chapters)
+        # 设置线程属性，便于跟踪
+        thread.url = url
+        thread.file_path = file_path
+        # 连接信号
+        thread.progress_updated.connect(lambda progress, t=thread: self._update_thread_progress(progress, t))
+        thread.message_received.connect(lambda msg, t=thread: self._forward_message(msg, t))
+        thread.download_completed.connect(lambda success, msg, t=thread: self._thread_completed(success, msg, t))
+        thread.download_timing.connect(lambda elapsed, estimated, t=thread: self._forward_timing(elapsed, estimated, t))
+        
+        # 添加到管理列表
+        self.download_threads.append(thread)
+        self.total_downloads += 1
+        return thread
+    
+    def start_all(self, batch_mode=False):
+        """
+        启动所有下载任务
+        Args:
+            batch_mode (bool): 是否为批量下载模式
+        """
+        self.is_batch_download = batch_mode
+        self.active_downloads = 0
+        self.completed_downloads = 0
+        self.is_all_complete = False
+        
+        for thread in self.download_threads:
+            if not thread.isRunning():
+                thread.start()
+                self.active_downloads += 1
+        
+        # 批量下载时发送开始通知
+        if batch_mode and hasattr(self.parent, 'append_log'):
+            self.parent.append_log(f"批量下载开始，共{self.total_downloads}个任务")
+    
+    def stop_all(self):
+        """
+        停止所有下载任务
+        """
+        for thread in self.download_threads:
+            if thread.isRunning():
+                thread.stop()
+        
+        # 停止后重置状态
+        self.is_batch_download = False
+        if hasattr(self.parent, 'append_log'):
+            self.parent.append_log("所有下载任务已停止")
+    
+    def _update_thread_progress(self, progress, thread):
+        """
+        更新单个线程的进度
+        """
+        if hasattr(self.parent, 'update_progress'):
+            # 如果是单任务下载，更新主进度条
+            if self.total_downloads == 1:
+                self.parent.update_progress(progress)
+    
+    def _forward_message(self, message, thread):
+        """
+        转发线程的消息，并添加任务标识
+        """
+        if hasattr(self.parent, 'append_log'):
+            # 从URL中提取网站标识
+            site_identifier = self._get_site_identifier(thread.url)
+            # 从文件路径提取文件名
+            import os
+            filename = os.path.basename(thread.file_path)
+            self.parent.append_log(f"[{site_identifier}] [{filename}] {message}")
+    
+    def _thread_completed(self, success, message, thread):
+        """
+        处理线程完成事件
+        """
+        self.active_downloads -= 1
+        self.completed_downloads += 1
+        
+        if hasattr(self.parent, 'append_log'):
+            # 从URL中提取网站标识
+            site_identifier = self._get_site_identifier(thread.url)
+            # 从文件路径提取文件名
+            import os
+            filename = os.path.basename(thread.file_path)
+            status = "成功" if success else "失败"
+            self.parent.append_log(f"[{site_identifier}] [{filename}] 下载{status}: {message}")
+        
+        # 检查是否所有下载都已完成
+        if self.active_downloads == 0 and self.completed_downloads == self.total_downloads:
+            self.is_all_complete = True
+            self.is_batch_download = False
+            
+            # 通知主界面所有下载完成
+            if hasattr(self.parent, 'on_all_downloads_completed'):
+                self.parent.on_all_downloads_completed()
+            
+            # 显示完成消息
+            if hasattr(self.parent, 'append_log'):
+                self.parent.append_log(f"所有下载任务已完成，总计{self.completed_downloads}个文件")
+    
+    def _forward_timing(self, elapsed, estimated, thread):
+        """
+        转发计时信息
+        """
+        # 仅在批量下载模式下显示详细计时信息
+        if self.is_batch_download and hasattr(self.parent, 'append_log'):
+            # 从URL中提取网站标识
+            site_identifier = self._get_site_identifier(thread.url)
+            # 从文件路径提取文件名
+            import os
+            filename = os.path.basename(thread.file_path)
+            self.parent.append_log(f"[{site_identifier}] [{filename}] 已用时间: {elapsed}, 预计剩余: {estimated}")
+        elif not self.is_batch_download and hasattr(self.parent, 'update_timing_info'):
+            # 单任务模式更新主界面计时信息
+            self.parent.update_timing_info(elapsed, estimated)
+    
+    def _get_site_identifier(self, url):
+        """
+        从URL中提取网站标识
+        """
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(url)
+            # 返回域名的主部分作为标识
+            return parsed_url.netloc.split('.')[-2] if '.' in parsed_url.netloc else parsed_url.netloc
+        except:
+            return "未知站点"
+    
+    def is_any_running(self):
+        """
+        检查是否有任何下载任务正在运行
+        """
+        for thread in self.download_threads:
+            if thread.isRunning():
+                return True
+        return False
+    
+    def clear_tasks(self):
+        """
+        清空所有下载任务
+        """
+        self.download_threads = []
+        self.active_downloads = 0
+        self.completed_downloads = 0
+        self.total_downloads = 0
+        self.is_all_complete = False
+        self.is_batch_download = False
+
 # 小说下载线程，处理耗时的下载操作
 class DownloadThread(QThread) :
     """
@@ -4409,8 +4591,8 @@ class DownloadThread(QThread) :
     message_received = pyqtSignal(str)
     # 定义信号：下载完成（传递成功状态和结果消息）
     download_completed = pyqtSignal(bool , str)
-    # 定义信号：下载计时（传递已用时间和预估时间，单位为秒）
-    download_timing = pyqtSignal(float, float)
+    # 定义信号：下载计时（传递已用时间和预估时间，字符串格式）
+    download_timing = pyqtSignal(str, str)
     """
         初始化下载线程
         Args:
@@ -4951,8 +5133,9 @@ class NovelDownloadWindow(QWidget) :
         super().__init__(parent)
         self.parent = parent
         self.setWindowFlags(Qt.WindowType.Window)
-        self.setWindowTitle("小说下载器")
-        self.setMinimumSize(600 , 600)
+        self.setWindowTitle("小说下载器_designed_by_wwq")
+        # 修改最小尺寸为更宽的横向布局
+        self.setMinimumSize(1200 , 600)
         self.init_ui()
         # 设置窗口位置在上一个窗口的左上角
         if parent and parent.isVisible() :
@@ -4964,6 +5147,8 @@ class NovelDownloadWindow(QWidget) :
         self.file_open_thread = None
         # 美化UI
         self.setup_styles()
+        # 窗口显示时自动最大化
+        self.showMaximized()
     """设置美化的UI样式，使用Qt样式表设置各控件的外观"""
     def setup_styles(self) :
        # 设置应用整体样式
@@ -5033,14 +5218,43 @@ class NovelDownloadWindow(QWidget) :
         self.progress_bar.setPalette(palette)
     """初始化用户界面，创建并布局所有UI控件"""
     def init_ui(self) :
-        # 创建主布局
-        main_layout = QVBoxLayout()
-        main_layout.setContentsMargins(12 , 12 , 12 , 12)  # 减小内边距
-        main_layout.setSpacing(12)  # 减小间距
+        # 创建下载管理器
+        self.download_manager = DownloadManager(self)
+        # 存储下载任务的列表
+        self.download_tasks = []
         
-        # 创建设置区域分组
-        settings_layout = QVBoxLayout()
-        settings_layout.setSpacing(10)
+        # 创建主布局 - 修改为横向布局以适应全屏横向显示
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(15)
+        
+        # 左侧控制面板区域
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(12)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 批量下载设置组
+        batch_group = QGroupBox("批量下载设置")
+        batch_layout = QVBoxLayout()
+        batch_group.setLayout(batch_layout)
+        
+        # 批量URL输入区域
+        batch_url_layout = QVBoxLayout()
+        batch_url_label = QLabel("多个网站URL（每行一个）:")
+        self.batch_url_input = QTextEdit()
+        self.batch_url_input.setPlaceholderText("在此处粘贴多个小说网站URL，每行一个")
+        self.batch_url_input.setMinimumHeight(100)
+        batch_url_layout.addWidget(batch_url_label)
+        batch_url_layout.addWidget(self.batch_url_input)
+        
+        # 添加任务按钮
+        add_task_btn = QPushButton("添加到下载任务")
+        add_task_btn.clicked.connect(self.add_download_task)
+        batch_url_layout.addWidget(add_task_btn)
+        
+        batch_layout.addLayout(batch_url_layout)
+        left_layout.addWidget(batch_group)
         
         # 章节识别设置组
         chapter_group = QGroupBox("章节识别设置")
@@ -5131,6 +5345,7 @@ class NovelDownloadWindow(QWidget) :
         
         chapter_layout.addLayout(chapter_form)
         chapter_layout.addLayout(detect_layout)
+        left_layout.addWidget(chapter_group)
         
         # 下载设置组
         download_group = QGroupBox("下载设置")
@@ -5185,7 +5400,7 @@ class NovelDownloadWindow(QWidget) :
         chapters_sub_layout = QHBoxLayout()
         chapters_sub_layout.addWidget(QLabel("总章节数:"))
         self.total_chapters_input = QSpinBox()
-        self.total_chapters_input.setRange(0 , 9999)
+        self.total_chapters_input.setRange(0, 9999)
         self.total_chapters_input.setSuffix(" 章")
         self.total_chapters_input.setToolTip("设置为0表示自动估算总章节数")
         self.total_chapters_input.setMinimumWidth(100)
@@ -5201,27 +5416,69 @@ class NovelDownloadWindow(QWidget) :
         
         download_layout.addLayout(download_form)
         download_layout.addWidget(save_settings_button)
+        left_layout.addWidget(download_group)
         
-        # 将设置组添加到主布局
-        settings_layout.addWidget(chapter_group)
-        settings_layout.addWidget(download_group)
-        main_layout.addLayout(settings_layout)
+        # 下载任务列表
+        task_group = QGroupBox("下载任务列表")
+        task_layout = QVBoxLayout()
+        task_group.setLayout(task_layout)
+        
+        # 任务列表视图
+        self.task_list = QListWidget()
+        self.task_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.task_list.setAlternatingRowColors(True)
+        # 设置任务列表高度，使其在左侧面板中占据适当空间
+        self.task_list.setMaximumHeight(200)
+        task_layout.addWidget(self.task_list)
+        
+        # 任务控制按钮
+        task_control_layout = QHBoxLayout()
+        
+        # 删除选中任务按钮
+        delete_task_btn = QPushButton("删除选中任务")
+        delete_task_btn.clicked.connect(self.delete_selected_tasks)
+        task_control_layout.addWidget(delete_task_btn)
+        
+        # 清空任务列表按钮
+        clear_tasks_btn = QPushButton("清空任务列表")
+        clear_tasks_btn.clicked.connect(self.clear_all_tasks)
+        task_control_layout.addWidget(clear_tasks_btn)
+        
+        task_layout.addLayout(task_control_layout)
+        left_layout.addWidget(task_group)
+        
+        # 设置左侧面板最小宽度
+        left_panel.setMinimumWidth(600)
+        
+        # 右侧状态和日志区域
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(12)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         
         # 操作按钮区域
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(15)
-        button_layout.setContentsMargins(0, 5, 0, 5)
+        button_layout.setSpacing(10)
+        button_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.download_button = QPushButton("开始下载")
+        # 单任务下载按钮（兼容原功能）
+        self.download_button = QPushButton("下载当前设置")
         self.download_button.setIcon(QIcon.fromTheme("download"))
         self.download_button.setMinimumHeight(36)
-        self.download_button.clicked.connect(self.start_download)
+        self.download_button.clicked.connect(self.start_single_download)
         
-        self.stop_button = QPushButton("停止下载")
+        # 批量下载按钮
+        self.batch_download_button = QPushButton("批量下载所有任务")
+        self.batch_download_button.setIcon(QIcon.fromTheme("download"))
+        self.batch_download_button.setMinimumHeight(36)
+        self.batch_download_button.clicked.connect(self.start_batch_download)
+        
+        # 停止按钮（现在停止所有下载）
+        self.stop_button = QPushButton("停止所有下载")
         self.stop_button.setIcon(QIcon.fromTheme("process-stop"))
         self.stop_button.setMinimumHeight(36)
         self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_download)
+        self.stop_button.clicked.connect(self.stop_all_downloads)
         
         self.open_file_button = QPushButton("打开已下载文件")
         self.open_file_button.setIcon(QIcon.fromTheme("document-open"))
@@ -5229,16 +5486,17 @@ class NovelDownloadWindow(QWidget) :
         self.open_file_button.clicked.connect(self.open_downloaded_file)
         
         button_layout.addWidget(self.download_button, 1)  # 均分空间
+        button_layout.addWidget(self.batch_download_button, 1)  # 均分空间
         button_layout.addWidget(self.stop_button, 1)      # 均分空间
         button_layout.addWidget(self.open_file_button, 1) # 均分空间
-        main_layout.addLayout(button_layout)
+        right_layout.addLayout(button_layout)
         
         # 进度条 - 显示下载进度
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setFormat("准备中...")
-        main_layout.addWidget(self.progress_bar)
+        right_layout.addWidget(self.progress_bar)
         
         # 下载计时信息
         timing_layout = QHBoxLayout()
@@ -5247,29 +5505,67 @@ class NovelDownloadWindow(QWidget) :
         self.estimated_time_label = QLabel("预估时间: --")
         timing_layout.addWidget(self.elapsed_time_label)
         timing_layout.addWidget(self.estimated_time_label)
-        main_layout.addLayout(timing_layout)
+        right_layout.addLayout(timing_layout)
         
         # 日志显示框 - 显示下载过程中的信息和错误
+        log_group = QGroupBox("下载日志")
+        log_layout = QVBoxLayout(log_group)
+        
         self.log_display = QTextEdit()
         self.log_display.setReadOnly(True)
         self.log_display.setPlaceholderText("下载日志将显示在这里...")
+        
         # 设置较小的字体
         font = QFont()
         font.setPointSize(9)
         self.log_display.setFont(font)
         # 设置日志区域为可拉伸
-        self.log_display.setSizePolicy(QSizePolicy.Policy.Expanding , QSizePolicy.Policy.Expanding)
-        main_layout.addWidget(self.log_display)
+        self.log_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        log_layout.addWidget(self.log_display)
+        
+        right_layout.addWidget(log_group)
         
         # 文件内容显示窗口
+        content_group = QGroupBox("文件内容")
+        content_layout = QVBoxLayout(content_group)
+        
         self.content_display = QTextEdit()
         self.content_display.setReadOnly(True)
         self.content_display.setPlaceholderText("已打开的文件内容将显示在这里...")
-        self.content_display.setSizePolicy(QSizePolicy.Policy.Expanding , QSizePolicy.Policy.Expanding)
+        self.content_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.content_display.setVisible(False)  # 初始隐藏
-        main_layout.addWidget(self.content_display)
+        content_layout.addWidget(self.content_display)
+        
+        right_layout.addWidget(content_group)
+        
+        # 设置右侧面板为可伸缩，占据更多空间
+        right_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        # 将左右面板添加到主布局
+        main_layout.addWidget(left_panel, 1)  # 左侧面板占用较小比例
+        main_layout.addWidget(right_panel, 2)  # 右侧面板占用较大比例
         
         self.setLayout(main_layout)
+    
+    def update_progress(self, progress):
+        """
+        更新下载进度条
+        Args:
+            progress (int): 下载进度百分比 (0-100)
+        """
+        self.progress_bar.setValue(progress)
+        self.progress_bar.setFormat(f"下载进度: {progress}%")
+    
+    def update_timing_info(self, elapsed, estimated):
+        """
+        更新下载计时信息
+        Args:
+            elapsed (str): 已用时间
+            estimated (str): 预估剩余时间
+        """
+        self.elapsed_time_label.setText(f"已用时间: {elapsed}")
+        self.estimated_time_label.setText(f"预估时间: {estimated}")
+    
     """浏览并选择保存路径，打开文件对话框让用户选择保存目录"""
     def browse_path(self) :
         path = QFileDialog.getExistingDirectory(self , "选择保存目录")
@@ -5379,6 +5675,300 @@ class NovelDownloadWindow(QWidget) :
             self.download_thread.stop()
             # 禁用停止按钮，防止重复点击
             self.stop_button.setEnabled(False)
+    
+    """添加下载任务到任务列表
+    从批量URL输入框中读取URLs，并使用当前设置的标签、属性等信息创建下载任务
+    """
+    def add_download_task(self):
+        # 获取批量URL
+        batch_urls = self.batch_url_input.toPlainText().strip().split('\n')
+        # 过滤空行
+        batch_urls = [url.strip() for url in batch_urls if url.strip()]
+        
+        if not batch_urls:
+            dialog = CustomDialog("请输入至少一个有效的URL" , title = "警告" , button_text = "知道了" , parent = self)
+            dialog.exec()
+            return
+        
+        # 获取共同的设置参数
+        tag = self.tag_input.text()
+        attr = self.attr_input.text()
+        choose = self.choose_input.text()
+        save_path = self.path_input.text()
+        base_filename = self.filename_input.text()
+        total_chapters = self.total_chapters_input.value()
+        total_chapters = total_chapters if total_chapters > 0 else None
+        
+        # 验证必要的设置
+        if not tag or not attr or not save_path:
+            dialog = CustomDialog("请确保已设置标签、属性和保存路径" , title = "警告" , button_text = "知道了" , parent = self)
+            dialog.exec()
+            return
+        
+        # 确保保存路径存在
+        if not os.path.exists(save_path):
+            try:
+                os.makedirs(save_path)
+            except Exception as e:
+                dialog = CustomDialog(f"创建保存路径失败: {str(e)}" , title = "错误" , button_text = "知道了" , parent = self)
+                dialog.exec()
+                return
+        
+        # 解析属性
+        attr_dict = {}
+        if '=' in attr:
+            parts = attr.split('=')
+            attr_dict[parts[0].strip()] = parts[1].strip()
+            
+        # 解析选择器
+        choose_list = []
+        if ',' in choose:
+            parts = choose.split(',')
+        elif '，' in choose:
+            parts = choose.split('，')
+        else:
+            parts = [choose]
+        choose_list = [part.strip() for part in parts]
+        
+        # 为每个URL创建任务
+        added_count = 0
+        for i, url in enumerate(batch_urls):
+            # 生成唯一的文件名
+            if len(batch_urls) > 1:
+                # 如果有多个URL，在文件名中添加序号
+                name, ext = os.path.splitext(base_filename)
+                filename = f"{name}_{i+1}{ext}"
+            else:
+                filename = base_filename
+            
+            file_path = os.path.join(save_path, filename)
+            
+            # 创建任务对象
+            task = {
+                'url': url,
+                'tag': tag,
+                'attr_dict': attr_dict,
+                'choose_dict': choose_list,
+                'file_path': file_path,
+                'total_chapters': total_chapters
+            }
+            
+            # 添加到任务列表
+            self.download_tasks.append(task)
+            
+            # 添加到UI列表
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(url)
+                site_info = f"[{parsed.netloc.split('.')[-2]}] " if '.' in parsed.netloc else ""
+            except:
+                site_info = "[未知站点] "
+            
+            display_text = f"{site_info}{os.path.basename(file_path)}"
+            self.task_list.addItem(display_text)
+            added_count += 1
+        
+        self.append_log(f"已成功添加 {added_count} 个下载任务")
+        # 清空URL输入框
+        self.batch_url_input.clear()
+    
+    """单任务下载（兼容原功能）
+    使用当前设置下载单个小说
+    """
+    def start_single_download(self):
+        """
+        开始单任务下载（兼容原功能）
+        """
+        try:
+            url = self.url_input.text()
+            tag = self.tag_input.text()
+            attr = self.attr_input.text()
+            choose = self.choose_input.text()
+            save_path = self.path_input.text()
+            filename = self.filename_input.text()
+            total_chapters = self.total_chapters_input.value()
+            total_chapters = total_chapters if total_chapters > 0 else None
+            
+            if not url or not tag or not attr:
+                dialog = CustomDialog("请输入完整的 URL、标签和属性信息" , title = "警告" , button_text = "知道了" , parent = self)
+                dialog.exec()
+                return
+            
+            if not save_path or not filename:
+                dialog = CustomDialog("请设置保存路径和文件名" , title = "警告" , button_text = "知道了" , parent = self)
+                dialog.exec()
+                return
+            
+            # 确保保存路径存在
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            
+            # 完整文件路径
+            self.full_file_path = os.path.join(save_path, filename)
+            
+            # 解析attr属性为字典
+            attr_dict = {}
+            if '=' in attr:
+                parts = attr.split('=')
+                attr_dict[parts[0].strip()] = parts[1].strip()
+                
+            # 解析choose属性为列表
+            choose_list = []
+            if ',' in choose:
+                parts = choose.split(',')
+            elif '，' in choose:
+                parts = choose.split('，')
+            else:
+                parts = [choose]
+            choose_list = [part.strip() for part in parts]
+            
+            # 更新按钮状态
+            self.download_button.setEnabled(False)
+            self.batch_download_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("准备下载...")
+            
+            # 通过下载管理器添加任务
+            thread = self.download_manager.add_download(url, tag, attr_dict, choose_list, self.full_file_path, total_chapters)
+            
+            # 特殊连接进度信号到主进度条
+            thread.progress_updated.connect(self.update_progress)
+            thread.download_completed.connect(self.download_finished)
+            thread.download_timing.connect(self.update_timing_info)
+            
+            # 启动下载
+            thread.start()
+            self.download_manager.active_downloads += 1
+            
+            self.append_log("开始准备下载...")
+            if total_chapters:
+                self.append_log(f"已设置总章节数: {total_chapters}")
+            else:
+                self.append_log("未设置总章节数，将使用估算进度")
+            self.append_log(f"文件将保存至: {self.full_file_path}")
+            
+        except Exception as e:
+            import traceback
+            self.append_log(f"初始化下载时出错: {str(e)}")
+            self.append_log(f"详细错误: {traceback.format_exc()}")
+            # 恢复按钮状态
+            self.download_button.setEnabled(True)
+            self.batch_download_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+    
+    """批量下载所有任务
+    启动任务列表中的所有下载任务
+    """
+    def start_batch_download(self):
+        """
+        批量下载所有任务
+        """
+        try:
+            if not self.download_tasks:
+                dialog = CustomDialog("下载任务列表为空，请先添加任务" , title = "提示" , button_text = "知道了" , parent = self)
+                dialog.exec()
+                return
+            
+            # 更新按钮状态
+            self.download_button.setEnabled(False)
+            self.batch_download_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("开始批量下载...")
+            
+            self.append_log(f"开始批量下载 {len(self.download_tasks)} 个任务...")
+            
+            # 清空之前的任务
+            self.download_manager.clear_tasks()
+            
+            # 启动所有任务
+            task_count = 0
+            for task in self.download_tasks:
+                try:
+                    thread = self.download_manager.add_download(
+                        task['url'],
+                        task['tag'],
+                        task['attr_dict'],
+                        task['choose_dict'],
+                        task['file_path'],
+                        task['total_chapters']
+                    )
+                    task_count += 1
+                except Exception as e:
+                    self.append_log(f"添加任务失败: {str(e)}")
+            
+            if task_count > 0:
+                # 统一启动所有线程，设置为批量下载模式
+                self.download_manager.start_all(batch_mode=True)
+            else:
+                self.append_log("错误: 没有成功添加任何下载任务")
+                # 恢复按钮状态
+                self.download_button.setEnabled(True)
+                self.batch_download_button.setEnabled(True)
+                self.stop_button.setEnabled(False)
+                
+        except Exception as e:
+            import traceback
+            self.append_log(f"批量下载错误: {str(e)}")
+            self.append_log(f"详细错误: {traceback.format_exc()}")
+            # 恢复按钮状态
+            self.download_button.setEnabled(True)
+            self.batch_download_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+    
+    """停止所有下载任务"""
+    def stop_all_downloads(self):
+        if self.download_manager.is_any_running():
+            self.append_log("正在停止所有下载任务...")
+            self.download_manager.stop_all()
+            # 禁用停止按钮，防止重复点击
+            self.stop_button.setEnabled(False)
+    
+    """删除选中的下载任务"""
+    def delete_selected_tasks(self):
+        selected_items = self.task_list.selectedItems()
+        if not selected_items:
+            return
+        
+        # 获取选中项的索引
+        selected_indices = []
+        for item in selected_items:
+            index = self.task_list.row(item)
+            selected_indices.append(index)
+        
+        # 按倒序删除，避免索引错乱
+        for index in sorted(selected_indices, reverse=True):
+            # 从数据列表中删除
+            del self.download_tasks[index]
+            # 从UI列表中删除
+            self.task_list.takeItem(index)
+        
+        self.append_log(f"已删除 {len(selected_indices)} 个选中任务")
+    
+    """清空所有下载任务"""
+    def clear_all_tasks(self):
+        if self.download_tasks:
+            dialog = CustomDialog("确定要清空所有下载任务吗？" , title = "确认" , button_text = "确定" , cancel_text = "取消" , parent = self)
+            if dialog.exec():
+                self.download_tasks.clear()
+                self.task_list.clear()
+                self.append_log("已清空所有下载任务")
+    
+    """所有下载任务完成后的回调函数"""
+    def on_all_downloads_completed(self):
+        self.append_log("所有下载任务已完成！")
+        # 重置按钮状态
+        self.download_button.setEnabled(True)
+        self.batch_download_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        # 重置进度条
+        self.progress_bar.setValue(100)
+        self.progress_bar.setFormat("所有下载已完成")
+        # 重置计时信息
+        self.elapsed_time_label.setText("已用时间: --")
+        self.estimated_time_label.setText("预估时间: --")
             
     """
     自动检测网页属性功能，根据用户输入的关键词在网页中查找包含该关键词的元素，
@@ -6492,7 +7082,7 @@ class VideoDownloaderWindow(QWidget):
 
     def init_ui(self):
         """初始化界面"""
-        self.setWindowTitle("多功能下载器")  # 标题改为更通用的名称
+        self.setWindowTitle("多功能下载器_designed_by_wwq")  # 标题改为更通用的名称
         self.setMinimumSize(600, 600)
 
         # 主布局
@@ -7662,7 +8252,7 @@ class AudioFormatConverterWindow(QWidget):
     
     def init_ui(self):
         """初始化界面"""
-        self.setWindowTitle("音频格式转换工具")
+        self.setWindowTitle("音频格式转换工具_designed_by_wwq")
         self.setMinimumSize(600, 500)
         
         # 主布局
@@ -8697,16 +9287,21 @@ class PackagingThread(QThread):
                     cmd.append('-y')
             else:
                 # 使用Python文件进行打包，自动生成spec文件
-                # 添加优化参数以减少exe启动时间
+                # 添加优化参数和修复QtWidgets DLL加载问题的参数
                 cmd = [
                     sys.executable, '-m', 'PyInstaller', self.python_file,
                     '--name', self.app_name, '--windowed',
                     '--optimize=2',  # 启用最大优化级别
-                    '--noupx',       # 不使用UPX压缩，加快启动速度
+                    '--noupx',       # 不使用UPX压缩，避免DLL相关问题
                     '--clean',       # 清理临时文件，确保每次打包都是全新的
                     '--workpath', os.path.join(package_infor_dir, "build"),  # 指定临时文件路径
                     '--distpath', os.path.join(package_infor_dir, "dist"),    # 指定输出目录路径
-                    '--specpath', package_infor_dir                           # 指定spec文件路径
+                    '--specpath', package_infor_dir,                          # 指定spec文件路径
+                    # 添加PyQt6相关的hiddenimports参数
+                    '--hidden-import=PyQt6',
+                    '--hidden-import=PyQt6.QtWidgets',
+                    '--hidden-import=PyQt6.QtGui',
+                    '--hidden-import=PyQt6.QtCore'
                 ]
                 # 如果设置了覆盖现有目录，添加-y选项
                 if getattr(self, 'overwrite_output', True):
@@ -8843,8 +9438,14 @@ class PackagingThread(QThread):
     def __del__(self):
         """
         确保线程在对象被删除时停止
+        处理线程对象可能已被销毁的情况
         """
-        self.wait()
+        try:
+            if self.isRunning():
+                self.wait(1000)  # 最多等待1秒
+        except RuntimeError:
+            # 忽略C++对象已被销毁的错误
+            pass
 
 class PackageAppGUI(QMainWindow):
     """
@@ -9011,7 +9612,7 @@ class PackageAppGUI(QMainWindow):
         button_layout.setContentsMargins(0, 5, 0, 5)
         self.package_button = QPushButton("开始打包")
         self.package_button.setMinimumHeight(36)
-        self.package_button.clicked.connect(self.start_package)
+        self.package_button.clicked.connect(self.package_app)
         self.save_settings_button = QPushButton("保存设置")
         self.save_settings_button.setMinimumHeight(36)
         self.save_settings_button.clicked.connect(self.save_settings)
@@ -9421,13 +10022,13 @@ class PackageAppGUI(QMainWindow):
         
     def copy_to_path(self, source_path):
         """
-        将打包后的文件复制到选择的保存路径
+        将打包后的文件复制到选择的保存路径（移至单独线程执行以避免UI阻塞）
         
         Args:
             source_path: 源文件路径
             
         Returns:
-            bool: 复制是否成功
+            bool: 复制线程是否成功启动
         """
         try:
             app_name = self.name_input.text().strip()
@@ -9437,39 +10038,166 @@ class PackageAppGUI(QMainWindow):
                 QMessageBox.critical(self, "错误", f"源文件 '{source_path}' 不存在")
                 return False
             
+            # 创建复制文件的线程
+            self.copy_thread = QThread()
+            self.copy_worker = CopyFileWorker(source_path, self.save_path, app_name)
+            self.copy_worker.moveToThread(self.copy_thread)
+            
+            # 连接信号和槽
+            self.copy_thread.started.connect(self.copy_worker.run)
+            self.copy_worker.progress_updated.connect(self.update_copy_progress)
+            self.copy_worker.finished.connect(self.on_copy_finished)
+            self.copy_worker.finished.connect(self.copy_thread.quit)
+            self.copy_worker.finished.connect(self.copy_worker.deleteLater)
+            self.copy_thread.finished.connect(self.copy_thread.deleteLater)
+            
+            # 启动线程
+            self.copy_thread.start()
             self.status_label.setText(f"正在复制文件到 {self.save_path}...")
-            QApplication.processEvents()  # 更新UI
-            
-            # 根据文件类型执行不同的复制操作
-            if os.path.isfile(source_path):
-                # 复制单个文件
-                destination_file = os.path.join(self.save_path, f'{app_name}.exe')
-                shutil.copy2(source_path, destination_file)
-                
-                # 创建一个简单的批处理文件来启动应用程序
-                batch_file = os.path.join(self.save_path, f'启动{app_name}.cmd')
-                with open(batch_file, 'w', encoding='utf-8') as f:
-                    f.write(f'@echo off\n"{destination_file}"\npause')
-                
-            else:
-                # 复制整个文件夹
-                destination_folder = os.path.join(self.save_path, app_name)
-                # 如果目标文件夹已存在，则先删除
-                if os.path.exists(destination_folder):
-                    shutil.rmtree(destination_folder)
-                shutil.copytree(source_path, destination_folder)
-            
-            self.status_label.setText(f"复制完成！{app_name}已成功复制到指定路径。")
-            QMessageBox.information(
-                self, "成功", 
-                f"应用程序已成功打包并复制到\n{self.save_path}\n\n" +
-                f"您可以前往该目录运行{app_name}。"
-            )
             return True
         except Exception as e:
             self.status_label.setText(f"复制文件时出错")
             QMessageBox.critical(self, "错误", f"复制文件时出错: {str(e)}")
             return False
+    
+    def update_copy_progress(self, message):
+        """
+        更新文件复制进度
+        """
+        self.status_label.setText(message)
+        QApplication.processEvents()  # 定期更新UI
+    
+    def on_copy_finished(self, success, message):
+        """
+        处理文件复制完成事件
+        """
+        if success:
+            self.status_label.setText(message)
+            QMessageBox.information(
+                self, "成功", 
+                f"应用程序已成功打包并复制到\n{self.save_path}\n\n" +
+                f"您可以前往该目录运行应用程序。"
+            )
+        else:
+            self.status_label.setText(f"复制文件时出错")
+            QMessageBox.critical(self, "错误", message)
+
+class CopyFileWorker(QObject):
+    """
+    文件复制工作线程类
+    用于在后台线程中执行文件复制操作，避免阻塞UI
+    """
+    progress_updated = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, source_path, save_path, app_name):
+        super().__init__()
+        self.source_path = source_path
+        self.save_path = save_path
+        self.app_name = app_name
+    
+    def run(self):
+        """
+        执行文件复制操作
+        """
+        try:
+            # 根据文件类型执行不同的复制操作
+            if os.path.isfile(self.source_path):
+                # 复制单个文件
+                destination_file = os.path.join(self.save_path, f'{self.app_name}.exe')
+                
+                # 使用分块复制并显示进度
+                self.copy_file_with_progress(self.source_path, destination_file)
+                
+                # 创建一个简单的批处理文件来启动应用程序
+                batch_file = os.path.join(self.save_path, f'启动{self.app_name}.cmd')
+                with open(batch_file, 'w', encoding='utf-8') as f:
+                    f.write(f'@echo off\n"{destination_file}"\npause')
+            else:
+                # 复制整个文件夹
+                destination_folder = os.path.join(self.save_path, self.app_name)
+                # 如果目标文件夹已存在，则先删除
+                if os.path.exists(destination_folder):
+                    shutil.rmtree(destination_folder)
+                
+                # 使用自定义的目录复制函数，支持进度反馈
+                self.copy_directory_with_progress(self.source_path, destination_folder)
+            
+            self.finished.emit(True, f"复制完成！{self.app_name}已成功复制到指定路径。")
+        except Exception as e:
+            self.finished.emit(False, f"复制文件时出错: {str(e)}")
+    
+    def copy_file_with_progress(self, src, dst):
+        """
+        分块复制文件并显示进度
+        """
+        buffer_size = 65536  # 64KB缓冲区
+        total_size = os.path.getsize(src)
+        copied_size = 0
+        
+        with open(src, 'rb') as fsrc, open(dst, 'wb') as fdst:
+            while True:
+                buffer = fsrc.read(buffer_size)
+                if not buffer:
+                    break
+                fdst.write(buffer)
+                copied_size += len(buffer)
+                
+                # 每复制一定量的数据后更新进度
+                if copied_size % (buffer_size * 10) == 0:
+                    progress_percent = min(100, int(copied_size / total_size * 100))
+                    self.progress_updated.emit(
+                        f"正在复制文件到 {self.save_path}... {progress_percent}%"
+                    )
+    
+    def copy_directory_with_progress(self, src, dst):
+        """
+        复制目录并显示进度
+        """
+        # 先计算总文件大小，用于显示进度
+        total_size = 0
+        for root, _, files in os.walk(src):
+            for file in files:
+                file_path = os.path.join(root, file)
+                total_size += os.path.getsize(file_path)
+        
+        # 创建目标目录
+        os.makedirs(dst)
+        
+        # 复制文件
+        copied_size = 0
+        for root, dirs, files in os.walk(src):
+            # 创建对应的子目录
+            for dir_name in dirs:
+                src_dir = os.path.join(root, dir_name)
+                rel_path = os.path.relpath(src_dir, src)
+                dst_dir = os.path.join(dst, rel_path)
+                os.makedirs(dst_dir, exist_ok=True)
+            
+            # 复制文件
+            for file in files:
+                src_file = os.path.join(root, file)
+                rel_path = os.path.relpath(src_file, src)
+                dst_file = os.path.join(dst, rel_path)
+                
+                # 使用分块复制
+                buffer_size = 65536  # 64KB缓冲区
+                file_size = os.path.getsize(src_file)
+                
+                with open(src_file, 'rb') as fsrc, open(dst_file, 'wb') as fdst:
+                    while True:
+                        buffer = fsrc.read(buffer_size)
+                        if not buffer:
+                            break
+                        fdst.write(buffer)
+                        copied_size += len(buffer)
+                        
+                        # 每复制一定量的数据后更新进度
+                        if copied_size % (buffer_size * 10) == 0:
+                            progress_percent = min(100, int(copied_size / total_size * 100))
+                            self.progress_updated.emit(
+                                f"正在复制文件到 {self.save_path}... {progress_percent}%"
+                            )
     
     def save_settings(self):
         """
@@ -9553,6 +10281,40 @@ class PackageAppGUI(QMainWindow):
                 self.status_label.setText("已加载保存的设置")
         except Exception as e:
             self.status_label.setText(f"加载设置失败，将使用默认设置")
+    
+    def save_settings(self):
+        """
+        保存用户设置到配置文件并显示保存成功提示
+        """
+        try:
+            # 确保配置文件目录存在
+            if not os.path.exists(self.config_dir):
+                os.makedirs(self.config_dir)
+                self.status_label.setText(f"创建配置目录: {self.config_dir}")
+                QApplication.processEvents()
+                
+            # 收集设置信息
+            settings = {
+                "app_name": self.name_input.text().strip(),
+                "save_path": self.save_path,
+                "is_single_file": self.single_file_radio.isChecked(),
+                "python_file": getattr(self, 'python_file', ''),
+                "spec_file": getattr(self, 'spec_file', ''),
+                "use_existing_spec": getattr(self, 'use_existing_spec', False),
+                "overwrite_output": getattr(self, 'overwrite_output', True)
+            }
+            
+            # 保存设置到文件
+            with open(self.config_file, 'wb') as f:
+                pickle.dump(settings, f)
+                
+            self.status_label.setText("设置已成功保存")
+            QMessageBox.information(self, "成功", "设置已成功保存到配置文件")
+            return True
+        except Exception as e:
+            self.status_label.setText(f"保存设置时出错: {str(e)}")
+            QMessageBox.critical(self, "错误", f"保存设置时出错: {str(e)}")
+            return False
     
     def start_package(self):
         """
